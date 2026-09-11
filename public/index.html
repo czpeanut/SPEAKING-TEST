@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>會說話的照片 - Talking Photo</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>🗣️ 會說話的照片</h1>
+      <p class="subtitle">上傳一張正臉照片，輸入文字，讓照片開口念出來</p>
+    </header>
+
+    <main class="stage">
+      <section class="photo-wrap">
+        <div class="photo-stage" id="photoStage">
+          <canvas id="canvas" class="photo-canvas" hidden></canvas>
+
+          <div class="upload-placeholder" id="uploadPlaceholder">
+            <div class="upload-icon">📷</div>
+            <p>請上傳一張清楚的正臉照片</p>
+            <label class="btn btn-primary upload-btn" for="photoInput">選擇照片</label>
+          </div>
+
+          <div class="detect-overlay" id="detectOverlay" hidden>
+            <div class="spinner"></div>
+            <p id="detectStatus">偵測臉部中…</p>
+          </div>
+
+          <div class="status-badge" id="statusBadge" hidden>
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">待機中</span>
+          </div>
+        </div>
+
+        <input type="file" id="photoInput" accept="image/*" hidden />
+        <button class="btn btn-ghost" id="changePhotoBtn" hidden>🔄 更換照片</button>
+        <p class="error-msg" id="photoError"></p>
+      </section>
+
+      <section class="panel">
+        <label for="textInput" class="panel-label">要說的話</label>
+        <textarea id="textInput" rows="6" maxlength="800" placeholder="在這裡輸入文字，例如：你好，我是你的虛擬助手！">你好，我是你的虛擬助手，很高興認識你！</textarea>
+
+        <div class="controls-row">
+          <div class="control">
+            <label for="voiceSelect">語音</label>
+            <select id="voiceSelect">
+              <option value="">載入語音清單中…</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="controls-row sliders">
+          <div class="control">
+            <label for="rateRange">語速 <span id="rateVal">1.0</span></label>
+            <input type="range" id="rateRange" min="0.5" max="2" step="0.1" value="1" />
+          </div>
+          <div class="control">
+            <label for="pitchRange">音調 <span id="pitchVal">1.0</span></label>
+            <input type="range" id="pitchRange" min="0.5" max="1.5" step="0.1" value="1" />
+          </div>
+          <div class="control">
+            <label for="volumeRange">音量 <span id="volumeVal">1.0</span></label>
+            <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="1" />
+          </div>
+        </div>
+
+        <div class="buttons-row">
+          <button id="speakBtn" class="btn btn-primary" disabled>▶ 開始說話</button>
+          <button id="stopBtn" class="btn btn-secondary" disabled>■ 停止</button>
+        </div>
+
+        <p class="hint" id="hint">請先在左側上傳照片。</p>
+      </section>
+    </main>
+  </div>
+
+  <audio id="ttsAudio" hidden></audio>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
