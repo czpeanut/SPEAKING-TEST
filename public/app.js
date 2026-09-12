@@ -34,10 +34,8 @@ const statusText = document.getElementById("statusText");
 const textInput = document.getElementById("textInput");
 const voiceSelect = document.getElementById("voiceSelect");
 const rateRange = document.getElementById("rateRange");
-const pitchRange = document.getElementById("pitchRange");
 const volumeRange = document.getElementById("volumeRange");
 const rateVal = document.getElementById("rateVal");
-const pitchVal = document.getElementById("pitchVal");
 const volumeVal = document.getElementById("volumeVal");
 const speakBtn = document.getElementById("speakBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -289,7 +287,6 @@ function buildTtsUrl() {
     text: textInput.value.trim(),
     voice: voiceSelect.value || "",
     rate: rateRange.value,
-    pitch: pitchRange.value,
   });
   return `/api/tts?${params.toString()}`;
 }
@@ -312,7 +309,7 @@ function speak() {
   audioEl.volume = Number(volumeRange.value);
   audioEl.play().catch((err) => {
     console.error(err);
-    hint.textContent = "播放失敗，請確認伺服器已設定 Azure Speech 金鑰（.env）。";
+    hint.textContent = "播放失敗，請確認伺服器已執行 npm run setup:piper 安裝 Piper 與語音模型。";
     setSpeakingUI(false);
   });
 }
@@ -339,7 +336,7 @@ audioEl.addEventListener("ended", () => {
 
 audioEl.addEventListener("error", () => {
   if (audioEl.src) {
-    hint.textContent = "語音播放失敗，請確認伺服器已設定 Azure Speech 金鑰（.env）並重試。";
+    hint.textContent = "語音播放失敗，請確認伺服器已執行 npm run setup:piper 安裝 Piper 與語音模型。";
   }
   setSpeakingUI(false);
   stopMouthLoop();
@@ -353,7 +350,6 @@ textInput.addEventListener("keydown", (e) => {
 });
 
 rateRange.addEventListener("input", () => (rateVal.textContent = Number(rateRange.value).toFixed(1)));
-pitchRange.addEventListener("input", () => (pitchVal.textContent = Number(pitchRange.value).toFixed(1)));
 volumeRange.addEventListener("input", () => {
   volumeVal.textContent = Number(volumeRange.value).toFixed(1);
   audioEl.volume = Number(volumeRange.value);
@@ -373,15 +369,15 @@ async function loadVoices() {
     ordered.forEach((v) => {
       const opt = document.createElement("option");
       opt.value = v.shortName;
-      opt.textContent = `${v.displayName} (${v.locale}, ${v.gender})`;
+      opt.textContent = `${v.displayName} (${v.locale})`;
       voiceSelect.appendChild(opt);
     });
 
-    const preferred = ordered.findIndex((v) => v.shortName === "zh-TW-HsiaoChenNeural");
+    const preferred = ordered.findIndex((v) => v.shortName === "zh_CN-huayan-medium");
     if (preferred >= 0) voiceSelect.selectedIndex = preferred;
   } catch {
-    voiceSelect.innerHTML = '<option value="zh-TW-HsiaoChenNeural">預設語音（zh-TW-HsiaoChenNeural）</option>';
-    hint.textContent = "無法連線取得語音清單，請確認伺服器已設定 Azure Speech 金鑰（.env）。";
+    voiceSelect.innerHTML = "<option value=\"\">尚未安裝語音模型</option>";
+    hint.textContent = "無法取得語音清單，請先在伺服器執行 npm run setup:piper 安裝 Piper 與語音模型。";
   }
 }
 
