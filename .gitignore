@@ -4,3 +4,5 @@ node_modules/
 vendor/
 voices/*.onnx
 voices/*.onnx.json
+public/app.bundle.js
+public/app.bundle.js.map

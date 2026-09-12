@@ -3,7 +3,7 @@ services:
     name: speaking-photo
     env: node
     plan: free
-    buildCommand: npm install && npm run setup:piper
+    buildCommand: npm install && npm run setup:piper && npm run build
     startCommand: npm start
     healthCheckPath: /
     autoDeploy: true

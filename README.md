@@ -1,52 +1,59 @@
-# 會說話的照片 Talking Photo
+# 會說話的人 Talking Avatar
 
-上傳一張正臉照片，輸入文字，照片裡的人就會開口念出來（嘴巴會隨語音音量張合）。
+用你（預先處理過）的照片建立一個即時虛擬人，輸入文字就能讓他馬上開口說話——嘴型、表情是 Simli 即時生成的，不是貼圖疊圖。
 
 ## 技術架構
 
-- **前端**：純 HTML/CSS/JS（無框架）。用 [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) 在瀏覽器端偵測上傳照片的嘴唇輪廓，說話時用 Web Audio API 的 `AnalyserNode` 即時分析語音音量，依音量大小把下嘴唇的 landmark 往下位移、疊上嘴巴內部色塊，模擬張嘴說話（簡易疊圖變形，不是逐音素的精準對嘴）。
-- **後端**：Node.js + Express，提供 `/api/tts`、`/api/voices` 兩個端點，呼叫本機安裝的 **[Piper](https://github.com/rhasspy/piper)**（開源本地語音合成引擎）產生語音並串流回傳給前端播放。完全在本機運算，不用申請任何帳號或 API key，也不需要網路連線（安裝時下載執行檔與語音模型除外）。
+- **語音**：後端用本機安裝的 **[Piper](https://github.com/rhasspy/piper)**（開源本地語音合成）產生語音，完全免費、不需要帳號。
+- **畫面**：**[Simli](https://www.simli.com)** 的即時串流虛擬人 API。你的照片只需要**離線處理一次**（`npm run setup:simli-face`），之後每次說話，前端把 Piper 產生的音訊即時餵給 Simli，透過 WebRTC 把畫面串流回來——嘴型、表情是模型即時生成的，不是照片疊圖。
+- **後端**：Node.js + Express，只做兩件事：(1) 呼叫 Piper 產生語音、(2) 用你的 Simli API key 換取短效 session token 給前端用（key 本身不會出現在瀏覽器裡）。
 
-## 部署到 Render（不需要在自己電腦跑任何指令）
+## 為什麼是這個架構
 
-因為後端要能執行 Node.js 並啟動 Piper 這個原生程式，**GitHub Pages 不能用**（它只能放靜態檔案，無法跑伺服器）。這個 repo 已經附上 `render.yaml`，接上 [Render](https://render.com) 之後它會自動照著這份設定 build＋部署，往後每次 `git push` 都會自動重新部署，你不需要在自己電腦執行任何 `npm` 指令。
+嘴巴要看起來自然、又要即時反應輸入的文字，同時做到這兩件事目前只有「訓練過真人說話影片的生成模型」辦得到——這不是前端技巧能模擬出來的。Simli 把這類模型包成 API，換算下來每分鐘不到 NT$0.3（免費方案每月還有 50 分鐘額度），比自己養一台 GPU 划算很多。代價是要綁定這家供應商、需要网路連線。詳細的方案比較在專案討論中有記錄。
 
-步驟：
+## 事前準備
 
-1. 到 [render.com](https://render.com) 免費註冊（不需要信用卡）
-2. Dashboard 點 **New +** → **Blueprint**
-3. 選擇這個 GitHub repo，Render 會自動讀到 `render.yaml` 並列出要建立的服務，點 **Apply** 確認
-4. 等待它跑 `npm install && npm run setup:piper`（第一次建置含下載 Piper 與語音模型，約需幾分鐘）
-5. 完成後 Render 會給一個網址（例如 `https://speaking-photo.onrender.com`），開啟即可使用
+1. Node.js 18 以上
+2. 一組 [Simli](https://www.simli.com) API key（免費註冊，每月 50 分鐘額度）
+3. 一張你自己（或已取得肖像權同意的人）的正臉照片——清楚、光線充足、頭部至少占畫面高度 15%
 
-**注意**：Render 免費方案閒置約 15 分鐘會自動休眠，之後有訪客進來會有十幾秒到一分鐘的冷啟動時間，屬正常現象。
-
-## 本機開發（選用）
-
-如果想在自己電腦先測試，才需要跑這些指令：
+## 安裝與設定
 
 ```bash
 npm install
-npm run setup:piper   # 下載 Piper 執行檔＋預設中文語音模型（約 100MB，僅需一次）
+npm run setup:piper                          # 下載 Piper 執行檔＋中文語音模型（約 100MB，一次性）
+cp .env.example .env                          # 編輯 .env，填入 SIMLI_API_KEY
+npm run setup:simli-face path/to/你的照片.jpg   # 建立 avatar，face id 會自動寫進 .env
+npm run build                                 # 打包前端
 npm start
 ```
 
 開啟瀏覽器造訪 `http://localhost:3000`。
 
+`setup:simli-face` 只需要跑一次；換照片才需要重跑。它會先把裁切預覽存到 `vendor/simli-face-preview.png`，可以打開確認裁切結果，不滿意可以重新執行。
+
+## 部署到 Render
+
+這個 repo 附有 `render.yaml`：連上 [Render](https://render.com)（免費、不需信用卡）之後，Dashboard 點 **New +** → **Blueprint** → 選這個 repo → **Apply**，它會自動跑 `npm install && npm run setup:piper && npm run build`。
+
+`SIMLI_API_KEY` 與 `SIMLI_FACE_ID` 需要在 Render 的 Environment 設定頁手動加入（`npm run setup:simli-face` 是一次性的本機操作，把跑出來的 face id 貼到 Render 環境變數即可，不需要每次部署都重新產生）。
+
+**注意**：Render 免費方案閒置約 15 分鐘會自動休眠，之後有訪客進來會有十幾秒到一分鐘的冷啟動時間。
+
 ## 使用方式
 
-1. 上傳一張光線充足、臉部完整清晰的正臉照片
-2. 等待偵測完成（會自動抓取嘴唇位置）
-3. 在文字框輸入想說的話，選擇語音、調整語速/音量
-4. 按「開始說話」，照片裡的嘴巴會隨語音音量開合
+1. 開啟頁面，等虛擬人連線完成（幾秒內）
+2. 在文字框輸入想說的話，選擇語音、調整語速/音量
+3. 按「開始說話」
 
-## 新增更多語音
+## 新增更多 Piper 語音
 
-預設只安裝了一個中文語音模型（`zh_CN-huayan-medium`）。想要更多語音選擇（例如不同腔調、性別、語言），到 [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) 下載任一語音的 `.onnx` 與 `.onnx.json` 兩個檔案，放進 `voices/` 資料夾即可，伺服器會自動偵測並列在語音選單中。
+到 [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) 下載任一語音的 `.onnx` 與 `.onnx.json` 兩個檔案，放進 `voices/` 資料夾即可，伺服器會自動偵測並列在語音選單中。
 
 ## 已知限制
 
-- 嘴型是音量驅動的簡易形變，不是逐音素精準對嘴，也不會有頭部/表情的動作
-- 需要清晰的正臉照片才能正確偵測嘴唇位置；側臉、遮擋、多人合照可能偵測失敗
-- Piper 是純規則式本地語音合成，音質、語調自然度不如雲端服務（如 Azure/ElevenLabs），但速度快、完全免費、不需連網
-- `npm run setup:piper` 需要下載約 100MB 的執行檔與語音模型，僅支援 Windows/macOS/Linux 常見平台（x64、arm64）；其他平台需自行至 [Piper releases](https://github.com/rhasspy/piper/releases) 下載並手動放進 `vendor/piper/`
+- 綁定 Simli 這家供應商；超出免費額度後按分鐘計費
+- 需要清晰的正臉照片才能建立 avatar
+- Piper 是規則式本地語音合成，音質不如雲端真人語音服務，但免費、不需連網
+- 每次說話都要有網路連線到 Simli（畫面串流）

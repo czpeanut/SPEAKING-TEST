@@ -3,41 +3,32 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>會說話的照片 - Talking Photo</title>
+<title>會說話的人 - Talking Avatar</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="app">
     <header class="app-header">
-      <h1>🗣️ 會說話的照片</h1>
-      <p class="subtitle">上傳一張正臉照片，輸入文字，讓照片開口念出來</p>
+      <h1>🗣️ 會說話的人</h1>
+      <p class="subtitle">輸入文字，讓他即時開口念出來</p>
     </header>
 
     <main class="stage">
-      <section class="photo-wrap">
-        <div class="photo-stage" id="photoStage">
-          <canvas id="canvas" class="photo-canvas" hidden></canvas>
+      <section class="avatar-wrap">
+        <div class="avatar-stage" id="avatarStage">
+          <video id="avatarVideo" class="avatar-video" autoplay playsinline muted></video>
+          <audio id="avatarAudio" autoplay></audio>
 
-          <div class="upload-placeholder" id="uploadPlaceholder">
-            <div class="upload-icon">📷</div>
-            <p>請上傳一張清楚的正臉照片</p>
-            <label class="btn btn-primary upload-btn" for="photoInput">選擇照片</label>
-          </div>
-
-          <div class="detect-overlay" id="detectOverlay" hidden>
+          <div class="connect-overlay" id="connectOverlay">
             <div class="spinner"></div>
-            <p id="detectStatus">偵測臉部中…</p>
+            <p id="connectStatus">連線中…</p>
           </div>
 
-          <div class="status-badge" id="statusBadge" hidden>
+          <div class="status-badge" id="statusBadge">
             <span class="status-dot" id="statusDot"></span>
             <span id="statusText">待機中</span>
           </div>
         </div>
-
-        <input type="file" id="photoInput" accept="image/*" hidden />
-        <button class="btn btn-ghost" id="changePhotoBtn" hidden>🔄 更換照片</button>
-        <p class="error-msg" id="photoError"></p>
       </section>
 
       <section class="panel">
@@ -69,13 +60,11 @@
           <button id="stopBtn" class="btn btn-secondary" disabled>■ 停止</button>
         </div>
 
-        <p class="hint" id="hint">請先在左側上傳照片。</p>
+        <p class="hint" id="hint">正在連線到虛擬人服務…</p>
       </section>
     </main>
   </div>
 
-  <audio id="ttsAudio" hidden></audio>
-
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.bundle.js"></script>
 </body>
 </html>

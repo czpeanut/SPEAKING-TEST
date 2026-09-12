@@ -1,9 +1,12 @@
+require("dotenv").config();
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const express = require("express");
 
 const PORT = process.env.PORT || 3000;
+const SIMLI_API_KEY = process.env.SIMLI_API_KEY;
+const SIMLI_FACE_ID = process.env.SIMLI_FACE_ID;
 
 const PIPER_DIR = path.join(__dirname, "vendor", "piper");
 const PIPER_BIN = path.join(PIPER_DIR, process.platform === "win32" ? "piper.exe" : "piper");
@@ -121,9 +124,51 @@ app.get("/api/tts", (req, res) => {
   child.stdin.end();
 });
 
+// Tells the frontend whether an avatar is configured, without exposing the API key.
+app.get("/api/simli/config", (req, res) => {
+  res.json({ ready: Boolean(SIMLI_API_KEY && SIMLI_FACE_ID) });
+});
+
+// Mints a short-lived Simli session token server-side, so SIMLI_API_KEY never
+// reaches the browser. The frontend uses the returned token to open a session
+// with the simli-client SDK directly.
+app.post("/api/simli/session", async (req, res) => {
+  if (!SIMLI_API_KEY || !SIMLI_FACE_ID) {
+    return res.status(500).json({
+      error: "尚未設定 Simli，請先在 .env 設定 SIMLI_API_KEY，並執行 npm run setup:simli-face 建立 avatar。",
+    });
+  }
+
+  try {
+    const simliRes = await fetch("https://api.simli.ai/compose/token", {
+      method: "POST",
+      headers: {
+        "x-simli-api-key": SIMLI_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        faceId: SIMLI_FACE_ID,
+        apiVersion: "v2",
+        audioInputFormat: "pcm16",
+      }),
+    });
+
+    const data = await simliRes.json();
+    if (!simliRes.ok || !data.session_token || data.session_token === "FAIL TOKEN") {
+      return res.status(502).json({ error: "無法建立 Simli session", detail: data });
+    }
+    res.json({ session_token: data.session_token });
+  } catch (err) {
+    res.status(502).json({ error: "連線 Simli 服務失敗", detail: String(err) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Speaking-photo server running at http://localhost:${PORT}`);
   if (!fs.existsSync(PIPER_BIN) || listVoices().length === 0) {
     console.warn("⚠️  尚未安裝 Piper 執行檔或語音模型，請執行 `npm run setup:piper`。");
+  }
+  if (!SIMLI_API_KEY || !SIMLI_FACE_ID) {
+    console.warn("⚠️  尚未設定 Simli，請在 .env 設定 SIMLI_API_KEY 並執行 `npm run setup:simli-face <照片路徑>`。");
   }
 });
