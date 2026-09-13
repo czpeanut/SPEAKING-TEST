@@ -18,7 +18,16 @@ const PIPER_SERVICE_URL = `http://127.0.0.1:${PIPER_SERVICE_PORT}`;
 
 const app = express();
 app.use(express.json({ limit: "20kb" }));
-app.use(express.static(path.join(__dirname, "public")));
+// No content hashing on the built bundle, so make sure browsers always
+// revalidate instead of silently running a stale app.bundle.js after a
+// deploy (this bit us once already — a fix looked like it did nothing
+// because the browser never re-fetched the new JS). Must run before
+// express.static, since that responds directly and skips later middleware.
+app.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-cache");
+  next();
+});
+app.use(express.static(path.join(__dirname, "public"), { etag: true, lastModified: true }));
 
 function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
