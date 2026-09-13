@@ -49,8 +49,13 @@ async function connectAvatar() {
   const sessionRes = await fetch("/api/simli/session", { method: "POST" });
   const sessionData = await sessionRes.json();
   if (!sessionRes.ok) {
+    console.error("Simli session error", sessionData);
     connectStatus.textContent = "連線失敗";
-    hint.textContent = sessionData.error || "無法建立 Simli session。";
+    const detailMsg =
+      sessionData.detail && typeof sessionData.detail === "object"
+        ? sessionData.detail.detail || JSON.stringify(sessionData.detail)
+        : sessionData.detail;
+    hint.textContent = [sessionData.error, detailMsg].filter(Boolean).join("：");
     return;
   }
 

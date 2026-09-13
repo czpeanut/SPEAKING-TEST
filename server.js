@@ -155,10 +155,12 @@ app.post("/api/simli/session", async (req, res) => {
 
     const data = await simliRes.json();
     if (!simliRes.ok || !data.session_token || data.session_token === "FAIL TOKEN") {
+      console.error("Simli compose/token 失敗:", simliRes.status, JSON.stringify(data));
       return res.status(502).json({ error: "無法建立 Simli session", detail: data });
     }
     res.json({ session_token: data.session_token });
   } catch (err) {
+    console.error("連線 Simli 服務失敗:", err);
     res.status(502).json({ error: "連線 Simli 服務失敗", detail: String(err) });
   }
 });
