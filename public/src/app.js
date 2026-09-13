@@ -5,7 +5,6 @@ import { SimliClient, LogLevel } from "simli-client/dist/client.js";
 
 const PCM_SAMPLE_RATE = 16000;
 const CHUNK_BYTES = 6000; // ~187ms of mono 16-bit PCM at 16kHz, matches the SDK's own example size
-const DEFAULT_VOICE = "zh_CN-chaowen-medium";
 
 const videoEl = document.getElementById("avatarVideo");
 const audioEl = document.getElementById("avatarAudio");
@@ -113,7 +112,6 @@ function sleep(ms) {
 async function synthesizeAndStream(text) {
   const params = new URLSearchParams({
     text,
-    voice: DEFAULT_VOICE,
     rate: rateRange.value,
   });
   const res = await fetch(`/api/tts?${params.toString()}`);

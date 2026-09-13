@@ -1,12 +1,11 @@
 {
   "name": "speaking-photo",
   "version": "2.0.0",
-  "description": "Ask a question, get a Gemini answer, and watch your avatar speak it — Piper TTS + Simli streaming lip-sync.",
+  "description": "Ask a question, get a Gemini answer, and watch your avatar speak it — Gemini TTS + Simli streaming lip-sync.",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "setup:voices": "node scripts/setup-voices.js",
     "setup:simli-face": "node scripts/setup-simli-face.js",
     "build": "node scripts/build-client.js",
     "start": "node server.js",

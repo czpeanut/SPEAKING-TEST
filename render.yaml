@@ -3,7 +3,7 @@ services:
     name: speaking-photo
     env: node
     plan: free
-    buildCommand: npm install && npm run setup:voices && pip3 install -r requirements.txt && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /
     autoDeploy: true

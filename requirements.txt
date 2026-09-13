@@ -1,2 +1,0 @@
-piper-tts[zh]==1.8.0
-unicode_rbnf
