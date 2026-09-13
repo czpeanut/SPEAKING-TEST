@@ -5,23 +5,27 @@ import { SimliClient, LogLevel } from "simli-client/dist/client.js";
 
 const PCM_SAMPLE_RATE = 16000;
 const CHUNK_BYTES = 6000; // ~187ms of mono 16-bit PCM at 16kHz, matches the SDK's own example size
+const DEFAULT_VOICE = "zh_CN-chaowen-medium";
 
 const videoEl = document.getElementById("avatarVideo");
 const audioEl = document.getElementById("avatarAudio");
 const connectOverlay = document.getElementById("connectOverlay");
 const connectStatus = document.getElementById("connectStatus");
-const statusBadge = document.getElementById("statusBadge");
+const topbarStatus = document.getElementById("topbarStatus");
 const statusText = document.getElementById("statusText");
 
-const textInput = document.getElementById("textInput");
-const voiceSelect = document.getElementById("voiceSelect");
+const askForm = document.getElementById("askForm");
+const questionInput = document.getElementById("questionInput");
+const askBtn = document.getElementById("askBtn");
 const rateRange = document.getElementById("rateRange");
 const volumeRange = document.getElementById("volumeRange");
 const rateVal = document.getElementById("rateVal");
 const volumeVal = document.getElementById("volumeVal");
-const speakBtn = document.getElementById("speakBtn");
-const stopBtn = document.getElementById("stopBtn");
 const hint = document.getElementById("hint");
+const answerBox = document.getElementById("answerBox");
+const answerText = document.getElementById("answerText");
+const historyList = document.getElementById("historyList");
+const historyEmpty = document.getElementById("historyEmpty");
 
 let simliClient = null;
 let avatarReady = false;
@@ -30,10 +34,9 @@ let stopRequested = false;
 
 function setSpeakingUI(isSpeaking) {
   speaking = isSpeaking;
-  statusBadge.classList.toggle("speaking", isSpeaking);
-  statusText.textContent = isSpeaking ? "說話中…" : "待機中";
-  speakBtn.disabled = isSpeaking || !avatarReady;
-  stopBtn.disabled = !isSpeaking;
+  topbarStatus.classList.toggle("speaking", isSpeaking);
+  statusText.textContent = isSpeaking ? "說話中" : avatarReady ? "待機中" : "連線中";
+  askBtn.disabled = isSpeaking || !avatarReady;
 }
 
 // ---------- Simli avatar connection ----------
@@ -42,6 +45,7 @@ async function connectAvatar() {
   const config = configRes && configRes.ok ? await configRes.json() : { ready: false };
   if (!config.ready) {
     connectStatus.textContent = "尚未設定 Simli";
+    statusText.textContent = "未連線";
     hint.textContent = "請先在伺服器設定 SIMLI_API_KEY，並執行 npm run setup:simli-face 建立 avatar。";
     return;
   }
@@ -51,6 +55,7 @@ async function connectAvatar() {
   if (!sessionRes.ok) {
     console.error("Simli session error", sessionData);
     connectStatus.textContent = "連線失敗";
+    statusText.textContent = "未連線";
     const detailMsg =
       sessionData.detail && typeof sessionData.detail === "object"
         ? sessionData.detail.detail || JSON.stringify(sessionData.detail)
@@ -85,6 +90,7 @@ async function connectAvatar() {
   } catch (err) {
     console.error(err);
     connectStatus.textContent = "連線失敗";
+    statusText.textContent = "未連線";
     hint.textContent = "無法連線到虛擬人服務，請重新整理頁面再試一次。";
   }
 }
@@ -107,7 +113,7 @@ function sleep(ms) {
 async function synthesizeAndStream(text) {
   const params = new URLSearchParams({
     text,
-    voice: voiceSelect.value || "",
+    voice: DEFAULT_VOICE,
     rate: rateRange.value,
   });
   const res = await fetch(`/api/tts?${params.toString()}`);
@@ -130,22 +136,52 @@ async function synthesizeAndStream(text) {
   }
 }
 
-async function speak() {
-  const text = textInput.value.trim();
-  if (!avatarReady) {
-    hint.textContent = "虛擬人還沒連線好，請稍候。";
-    return;
-  }
-  if (!text) {
-    hint.textContent = "請先輸入要說的文字。";
-    return;
-  }
+// ---------- Ask Gemini, then speak the answer ----------
+function addHistoryItem(question, answer) {
+  historyEmpty.hidden = true;
+  const item = document.createElement("li");
+  item.className = "history-item";
 
+  const time = document.createElement("span");
+  time.className = "history-time";
+  time.textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+
+  const q = document.createElement("p");
+  q.className = "history-q";
+  q.textContent = question;
+
+  const a = document.createElement("p");
+  a.className = "history-a";
+  a.textContent = answer;
+
+  item.append(time, q, a);
+  historyList.prepend(item);
+}
+
+async function askQuestion(question) {
   hint.textContent = "";
-  stopRequested = false;
-  setSpeakingUI(true);
+  answerBox.hidden = true;
+  askBtn.disabled = true;
+  statusText.textContent = "思考中";
+
   try {
-    await synthesizeAndStream(text);
+    const res = await fetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "問答服務發生錯誤");
+    }
+
+    answerText.textContent = data.answer;
+    answerBox.hidden = false;
+    addHistoryItem(question, data.answer);
+
+    stopRequested = false;
+    setSpeakingUI(true);
+    await synthesizeAndStream(data.answer);
   } catch (err) {
     console.error(err);
     hint.textContent = err.message || "發生錯誤，請重試。";
@@ -154,15 +190,25 @@ async function speak() {
   }
 }
 
-function stopSpeaking() {
-  stopRequested = true;
-}
+askForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const question = questionInput.value.trim();
+  if (!avatarReady) {
+    hint.textContent = "虛擬人還沒連線好，請稍候。";
+    return;
+  }
+  if (!question) {
+    hint.textContent = "請先輸入問題。";
+    return;
+  }
+  questionInput.value = "";
+  askQuestion(question);
+});
 
-speakBtn.addEventListener("click", speak);
-stopBtn.addEventListener("click", stopSpeaking);
-
-textInput.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") speak();
+questionInput.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    askForm.requestSubmit();
+  }
 });
 
 rateRange.addEventListener("input", () => (rateVal.textContent = Number(rateRange.value).toFixed(1)));
@@ -171,27 +217,4 @@ volumeRange.addEventListener("input", () => {
   audioEl.volume = Number(volumeRange.value);
 });
 
-// ---------- Piper voice list ----------
-async function loadVoices() {
-  try {
-    const res = await fetch("/api/voices");
-    if (!res.ok) throw new Error("failed");
-    const voices = await res.json();
-
-    voiceSelect.innerHTML = "";
-    voices.forEach((v) => {
-      const opt = document.createElement("option");
-      opt.value = v.shortName;
-      opt.textContent = `${v.displayName} (${v.locale})`;
-      voiceSelect.appendChild(opt);
-    });
-
-    const preferred = voices.findIndex((v) => v.shortName === "zh_CN-huayan-medium");
-    if (preferred >= 0) voiceSelect.selectedIndex = preferred;
-  } catch {
-    voiceSelect.innerHTML = "<option value=\"\">尚未安裝語音模型</option>";
-  }
-}
-
-loadVoices();
 connectAvatar();

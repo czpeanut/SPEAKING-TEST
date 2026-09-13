@@ -3,67 +3,77 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>會說話的人 - Talking Avatar</title>
+<title>會說話的人 - AI 問答虛擬人</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="app-header">
-      <h1>🗣️ 會說話的人</h1>
-      <p class="subtitle">輸入文字，讓他即時開口念出來</p>
-    </header>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="topbar-mark">◆</span>
+      <span class="topbar-title">會說話的人</span>
+      <span class="topbar-sub">AI QA AVATAR</span>
+    </div>
+    <div class="topbar-status" id="topbarStatus">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">連線中</span>
+    </div>
+  </header>
 
-    <main class="stage">
-      <section class="avatar-wrap">
-        <div class="avatar-stage" id="avatarStage">
-          <video id="avatarVideo" class="avatar-video" autoplay playsinline muted></video>
-          <audio id="avatarAudio" autoplay></audio>
-
-          <div class="connect-overlay" id="connectOverlay">
-            <div class="spinner"></div>
-            <p id="connectStatus">連線中…</p>
-          </div>
-
-          <div class="status-badge" id="statusBadge">
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">待機中</span>
-          </div>
+  <main class="app">
+    <section class="panel avatar-panel">
+      <div class="panel-head">
+        <span class="eyebrow">AVATAR</span>
+        <h2>虛擬人</h2>
+      </div>
+      <div class="avatar-stage" id="avatarStage">
+        <video id="avatarVideo" class="avatar-video" autoplay playsinline muted></video>
+        <audio id="avatarAudio" autoplay></audio>
+        <div class="connect-overlay" id="connectOverlay">
+          <div class="spinner"></div>
+          <p id="connectStatus">連線中…</p>
         </div>
-      </section>
+      </div>
+      <div class="control-row">
+        <label for="rateRange">語速<span class="control-val" id="rateVal">1.0</span></label>
+        <input type="range" id="rateRange" min="0.5" max="2" step="0.1" value="1" />
+      </div>
+      <div class="control-row">
+        <label for="volumeRange">音量<span class="control-val" id="volumeVal">1.0</span></label>
+        <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="1" />
+      </div>
+    </section>
 
-      <section class="panel">
-        <label for="textInput" class="panel-label">要說的話</label>
-        <textarea id="textInput" rows="6" maxlength="800" placeholder="在這裡輸入文字，例如：你好，我是你的虛擬助手！">你好，我是你的虛擬助手，很高興認識你！</textarea>
+    <section class="panel qa-panel">
+      <div class="panel-head">
+        <span class="eyebrow">ASK A QUESTION</span>
+        <h2>提問</h2>
+      </div>
 
-        <div class="controls-row">
-          <div class="control">
-            <label for="voiceSelect">語音</label>
-            <select id="voiceSelect">
-              <option value="">載入語音清單中…</option>
-            </select>
-          </div>
-        </div>
+      <form id="askForm" class="ask-form">
+        <textarea
+          id="questionInput"
+          rows="3"
+          maxlength="2000"
+          placeholder="輸入你的問題，例如：質數是什麼？"
+        ></textarea>
+        <button type="submit" id="askBtn" class="btn btn-primary" disabled>送出問題</button>
+      </form>
 
-        <div class="controls-row sliders">
-          <div class="control">
-            <label for="rateRange">語速 <span id="rateVal">1.0</span></label>
-            <input type="range" id="rateRange" min="0.5" max="2" step="0.1" value="1" />
-          </div>
-          <div class="control">
-            <label for="volumeRange">音量 <span id="volumeVal">1.0</span></label>
-            <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="1" />
-          </div>
-        </div>
+      <p class="hint" id="hint">正在連線到虛擬人服務…</p>
 
-        <div class="buttons-row">
-          <button id="speakBtn" class="btn btn-primary" disabled>▶ 開始說話</button>
-          <button id="stopBtn" class="btn btn-secondary" disabled>■ 停止</button>
-        </div>
+      <div class="answer-box" id="answerBox" hidden>
+        <span class="eyebrow">ANSWER</span>
+        <p id="answerText"></p>
+      </div>
 
-        <p class="hint" id="hint">正在連線到虛擬人服務…</p>
-      </section>
-    </main>
-  </div>
+      <div class="history-head">
+        <span class="eyebrow">RECENT · 最近對話</span>
+      </div>
+      <ol class="history-list" id="historyList">
+        <li class="history-empty" id="historyEmpty">還沒有紀錄</li>
+      </ol>
+    </section>
+  </main>
 
   <script type="module" src="app.bundle.js"></script>
 </body>

@@ -1,12 +1,12 @@
 {
   "name": "speaking-photo",
   "version": "2.0.0",
-  "description": "A pre-processed photo avatar that speaks typed text in real time — Piper TTS + Simli streaming lip-sync.",
+  "description": "Ask a question, get a Gemini answer, and watch your avatar speak it — Piper TTS + Simli streaming lip-sync.",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "setup:piper": "node scripts/setup-piper.js",
+    "setup:voices": "node scripts/setup-voices.js",
     "setup:simli-face": "node scripts/setup-simli-face.js",
     "build": "node scripts/build-client.js",
     "start": "node server.js",

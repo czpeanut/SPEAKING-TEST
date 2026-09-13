@@ -6,3 +6,6 @@ voices/*.onnx
 voices/*.onnx.json
 public/app.bundle.js
 public/app.bundle.js.map
+__pycache__/
+*.pyc
+g2pW/
