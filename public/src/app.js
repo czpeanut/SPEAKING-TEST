@@ -119,7 +119,8 @@ async function synthesizeAndStream(text) {
   const res = await fetch(`/api/tts?${params.toString()}`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "語音合成失敗");
+    console.error("TTS error", data);
+    throw new Error([data.error, data.detail].filter(Boolean).join("：") || "語音合成失敗");
   }
   const arrayBuffer = await res.arrayBuffer();
 

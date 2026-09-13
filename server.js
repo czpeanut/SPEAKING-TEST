@@ -71,6 +71,9 @@ function listVoices() {
 // Chinese phonemizer (BERT tokenizer + g2pW) from cold takes several seconds,
 // which would otherwise happen on every single /api/tts request.
 let piperServiceReady = false;
+let piperService = null;
+let piperRestartCount = 0;
+const MAX_PIPER_RESTARTS = 5;
 
 function startPiperService() {
   const voices = listVoices()
@@ -88,17 +91,28 @@ function startPiperService() {
   child.on("error", (err) => {
     console.error("⚠️  無法啟動 piper_service.py（需要 Python 3 與 requirements.txt 依賴）：", err.message);
   });
-  child.on("exit", (code) => {
+  child.on("exit", (code, signal) => {
     piperServiceReady = false;
-    console.error(`piper_service.py 已結束 (code ${code})，語音合成將無法使用。`);
+    const oomHint = signal === "SIGKILL" ? "（signal SIGKILL，很可能是記憶體不足被系統強制關閉）" : "";
+    console.error(`piper_service.py 已結束 (code ${code}, signal ${signal})${oomHint}`);
+
+    if (piperRestartCount >= MAX_PIPER_RESTARTS) {
+      console.error("piper_service.py 重啟次數過多，停止自動重啟，語音合成將無法使用。");
+      return;
+    }
+    piperRestartCount += 1;
+    console.error(`嘗試重新啟動 piper_service.py（第 ${piperRestartCount} 次）…`);
+    setTimeout(() => {
+      piperService = startPiperService();
+    }, 2000);
   });
 
   return child;
 }
 
-const piperService = startPiperService();
+piperService = startPiperService();
 
-process.on("exit", () => piperService.kill());
+process.on("exit", () => piperService && piperService.kill());
 process.on("SIGINT", () => process.exit());
 process.on("SIGTERM", () => process.exit());
 
@@ -148,12 +162,14 @@ app.get("/api/tts", async (req, res) => {
     const svcRes = await fetch(`${PIPER_SERVICE_URL}/synthesize?${params.toString()}`);
     if (!svcRes.ok || !svcRes.body) {
       const detail = await svcRes.text().catch(() => "");
-      return res.status(502).json({ error: "語音合成失敗", detail });
+      console.error("語音服務回應失敗:", svcRes.status, detail);
+      return res.status(502).json({ error: "語音合成失敗", detail: `(${svcRes.status}) ${detail}` });
     }
     res.setHeader("Content-Type", "audio/wav");
     res.setHeader("Cache-Control", "no-store");
     Readable.fromWeb(svcRes.body).pipe(res);
   } catch (err) {
+    console.error("連線語音服務失敗:", err);
     res.status(502).json({ error: "連線語音服務失敗", detail: String(err) });
   }
 });
