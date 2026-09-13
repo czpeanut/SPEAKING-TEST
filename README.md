@@ -16,7 +16,7 @@
 
 1. Node.js 18 以上
 2. 一組 [Simli](https://www.simli.com) API key（免費註冊，每月 50 分鐘額度）
-3. 一張你自己（或已取得肖像權同意的人）的正臉照片——清楚、光線充足、頭部至少占畫面高度 15%
+3. 一張你自己（或已取得肖像權同意的人）的正臉照片，**JPEG 或 PNG**（webp/heic 請先轉檔）——清楚、光線充足
 
 ## 安裝與設定
 
@@ -24,14 +24,16 @@
 npm install
 npm run setup:piper                          # 下載 Piper 執行檔＋中文語音模型（約 100MB，一次性）
 cp .env.example .env                          # 編輯 .env，填入 SIMLI_API_KEY
-npm run setup:simli-face path/to/你的照片.jpg   # 建立 avatar，face id 會自動寫進 .env
+npm run setup:simli-face path/to/你的照片.jpg   # 建立 avatar（需要幾分鐘處理），face id 會自動寫進 .env
 npm run build                                 # 打包前端
 npm start
 ```
 
 開啟瀏覽器造訪 `http://localhost:3000`。
 
-`setup:simli-face` 只需要跑一次；換照片才需要重跑。它會先把裁切預覽存到 `vendor/simli-face-preview.png`，可以打開確認裁切結果，不滿意可以重新執行。
+`setup:simli-face` 只需要跑一次；換照片才需要重跑。它會提交照片並輪詢等待處理完成（通常幾分鐘），完成後自動把 face id 寫進 `.env`。
+
+**免費方案的限制**：Simli 較新的 Trinity（Gaussian-splat）頭像需要付費方案才能透過 API 建立，免費方案打 API 會直接被拒絕。這個腳本改用 Simli 的 Legacy 頭像流程，免費方案可用，但官方標記為 deprecated——如果哪天這條路也關閉了，代表已經沒有免費方案可用的自訂照片路徑，屆時只能升級方案或改用 Simli 提供的預設人像。
 
 ## 部署到 Render
 

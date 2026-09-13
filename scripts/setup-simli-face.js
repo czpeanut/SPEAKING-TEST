@@ -1,7 +1,15 @@
 #!/usr/bin/env node
-// One-time avatar creation: takes a photo, asks Simli to reframe it, then
-// registers it as a Trinity face. Run this once per photo — the resulting
-// faceId is what the running app uses for every visitor from then on.
+// One-time avatar creation: takes a photo, sends it to Simli's Legacy face
+// pipeline, and polls until the resulting faceId is ready. The running app
+// then uses that one faceId for every visitor from then on.
+//
+// Why "Legacy" and not "Trinity": Trinity (Simli's newer Gaussian-splat
+// avatar) is gated behind a paid plan — free-tier API calls to
+// /faces/trinity return 403 "max number of GS Faces for your current
+// subscription" even with zero faces created. The Legacy pipeline
+// (/faces/legacy) works on the free tier; it's marked deprecated in Simli's
+// OpenAPI spec but is, as of this writing, the only free-tier path to a
+// custom photo avatar via the API.
 //
 // Usage: node scripts/setup-simli-face.js path/to/photo.jpg
 require("dotenv").config();
@@ -10,16 +18,26 @@ const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
 const ENV_PATH = path.join(ROOT, ".env");
-const PREVIEW_PATH = path.join(ROOT, "vendor", "simli-face-preview.png");
+const POLL_INTERVAL_MS = 15000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function main() {
   const photoPath = process.argv[2];
   if (!photoPath) {
-    console.error("用法: node scripts/setup-simli-face.js <你的照片路徑>");
+    console.error("用法: node scripts/setup-simli-face.js <你的照片路徑（jpg 或 png）>");
     process.exit(1);
   }
   if (!fs.existsSync(photoPath)) {
     console.error(`找不到檔案: ${photoPath}`);
+    process.exit(1);
+  }
+  const ext = path.extname(photoPath).toLowerCase();
+  if (![".jpg", ".jpeg", ".png"].includes(ext)) {
+    console.error("Simli 的 Legacy 頭像端點只接受 JPEG 或 PNG，請先轉檔（webp/heic 都需要先轉換）。");
     process.exit(1);
   }
 
@@ -30,63 +48,58 @@ async function main() {
   }
 
   const photoBytes = fs.readFileSync(photoPath);
-  const photoName = path.basename(photoPath);
+  const faceName = process.argv[3] || "default";
 
-  console.log("步驟 1/2：重新裁切/對齊照片（Trinity 需要頭部置中的正臉照）…");
-  const preprocessForm = new FormData();
-  preprocessForm.append("image", new Blob([photoBytes]), photoName);
+  console.log("提交照片給 Simli（免費方案走 Legacy 頭像流程）…");
+  const form = new FormData();
+  form.append("image", new Blob([photoBytes]), path.basename(photoPath));
 
-  const preprocessRes = await fetch("https://api.simli.ai/faces/trinity/preprocess", {
+  const submitRes = await fetch(`https://api.simli.ai/faces/legacy?face_name=${encodeURIComponent(faceName)}`, {
     method: "POST",
     headers: { "x-simli-api-key": apiKey },
-    body: preprocessForm,
+    body: form,
   });
 
-  if (!preprocessRes.ok) {
-    const detail = await preprocessRes.text().catch(() => "");
-    console.error(`預處理失敗 (${preprocessRes.status})：${detail}`);
-    console.error("常見原因：照片太小（需至少 512x512）、看不清楚正臉、或頭部占畫面高度不到 15%。");
-    process.exit(1);
-  }
-
-  const preprocessedBytes = Buffer.from(await preprocessRes.arrayBuffer());
-  fs.mkdirSync(path.dirname(PREVIEW_PATH), { recursive: true });
-  fs.writeFileSync(PREVIEW_PATH, preprocessedBytes);
-  console.log(`✓ 已存到 ${PREVIEW_PATH}，可以打開看看裁切結果是否OK。`);
-
-  console.log("步驟 2/2：建立 Trinity avatar（需要一點時間）…");
-  const faceName = process.argv[3] || "default";
-  const genForm = new FormData();
-  genForm.append("image", new Blob([preprocessedBytes]), "preprocessed.png");
-
-  const genRes = await fetch(
-    `https://api.simli.ai/faces/trinity?face_name=${encodeURIComponent(faceName)}`,
-    {
-      method: "POST",
-      headers: { "x-simli-api-key": apiKey },
-      body: genForm,
+  const submitData = await submitRes.json().catch(() => ({}));
+  if (!submitRes.ok) {
+    console.error(`提交失敗 (${submitRes.status})：${JSON.stringify(submitData)}`);
+    if (submitRes.status === 403) {
+      console.error("如果訊息提到 GS Faces／訂閱額度，代表你的方案不支援這個功能，請至 app.simli.com 檢查方案內容。");
     }
-  );
-
-  if (!genRes.ok) {
-    const detail = await genRes.text().catch(() => "");
-    console.error(`建立 avatar 失敗 (${genRes.status})：${detail}`);
     process.exit(1);
   }
 
-  const result = await genRes.json();
-  console.log("\n完整回應：");
-  console.log(JSON.stringify(result, null, 2));
-
-  const faceId =
-    result.faceId || result.face_id || result.id || result.faceUUID || result.uuid || null;
-
+  const faceId = submitData.character_uid || submitData.face_id;
   if (!faceId) {
-    console.warn(
-      "\n⚠️ 沒能自動辨識出 face id 欄位，請從上面的回應裡自己找出來，" +
-        "然後手動把它加進 .env：SIMLI_FACE_ID=<你找到的值>"
+    console.error("沒能從回應中取得 face id：", JSON.stringify(submitData));
+    process.exit(1);
+  }
+  if (submitData.warnings && submitData.warnings.length) {
+    console.log("提示：", submitData.warnings.join("；"));
+  }
+
+  console.log(`已加入處理佇列（face id: ${faceId}），開始等待完成（通常需要幾分鐘）…`);
+
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let lastStatus = null;
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    const statusRes = await fetch(
+      `https://api.simli.ai/faces/legacy/generation_status?face_id=${encodeURIComponent(faceId)}`,
+      { headers: { "x-simli-api-key": apiKey } }
     );
-    return;
+    const statusData = await statusRes.json().catch(() => ({}));
+    lastStatus = statusData.status;
+    console.log(`  狀態：${lastStatus || JSON.stringify(statusData)}`);
+
+    if (lastStatus && lastStatus !== "processing" && lastStatus !== "queued") {
+      break;
+    }
+  }
+
+  if (lastStatus !== "completed" && lastStatus !== "done" && lastStatus !== "ready") {
+    console.warn(`\n⚠️ 結束等待時狀態是「${lastStatus}」，不確定是否已經可用。`);
+    console.warn(`可以晚點手動檢查： curl "https://api.simli.ai/faces/legacy/generation_status?face_id=${faceId}" -H "x-simli-api-key: 你的key"`);
   }
 
   console.log(`\n✓ face id: ${faceId}`);
