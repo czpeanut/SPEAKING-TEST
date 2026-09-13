@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 const SIMLI_API_KEY = process.env.SIMLI_API_KEY;
 const SIMLI_FACE_ID = process.env.SIMLI_FACE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 const VOICES_DIR = path.join(__dirname, "voices");
 const DEFAULT_VOICE = "zh_CN-chaowen-medium";
