@@ -24,6 +24,33 @@ function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
+const SPEECH_SYSTEM_INSTRUCTION =
+  "你是一個用聲音回答問題的語音助手，你的回答會直接被語音合成朗讀出來，使用者聽不到也看不到任何符號。" +
+  "規則：(1) 只用簡短口語化的白話文回答，控制在 3 句話以內。" +
+  "(2) 絕對不要使用 Markdown 格式，不要有 **、#、-、`、條列清單。" +
+  "(3) 絕對不要使用 LaTeX 或數學符號語法，例如不要寫 $\\frac{a}{b}$，要用「a 除以 b」這種口語講法；不要寫 $x^2$，要說「x 的平方」。" +
+  "(4) 不要輸出任何無法唸出來的符號。";
+
+// Defensive cleanup in case the model still slips in formatting despite the
+// system instruction above — strips it rather than reading symbols aloud.
+function sanitizeForSpeech(text) {
+  return text
+    .replace(/\$\$?/g, "") // LaTeX delimiters
+    .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, "$1 除以 $2")
+    .replace(/\\sqrt\{([^{}]*)\}/g, "$1 的平方根")
+    .replace(/\\[a-zA-Z]+/g, "") // remaining LaTeX commands
+    .replace(/[{}]/g, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1") // **bold**
+    .replace(/\*(.*?)\*/g, "$1") // *italic*
+    .replace(/`+/g, "")
+    .replace(/^#{1,6}\s*/gm, "") // headers
+    .replace(/^[-*+]\s+/gm, "") // bullet markers
+    .replace(/^\d+\.\s+/gm, "") // numbered list markers
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
 function listVoices() {
   if (!fs.existsSync(VOICES_DIR)) return [];
   return fs
@@ -155,7 +182,14 @@ app.post("/api/ask", async (req, res) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          system_instruction: { parts: [{ text: SPEECH_SYSTEM_INSTRUCTION }] },
           contents: [{ parts: [{ text: question }] }],
+          // gemini-3.6-flash spends a variable, sometimes large, number of tokens
+          // "thinking" before it writes the visible answer, and that eats into
+          // maxOutputTokens — too low a cap truncates the answer itself
+          // (finishReason: MAX_TOKENS) before it gets a chance to speak. 2048
+          // leaves headroom for that plus the (intentionally short) reply.
+          generationConfig: { maxOutputTokens: 2048 },
         }),
       }
     );
@@ -166,10 +200,11 @@ app.post("/api/ask", async (req, res) => {
       return res.status(502).json({ error: "問答服務發生錯誤", detail: data.error && data.error.message });
     }
 
-    const answer = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-    if (!answer) {
+    const rawAnswer = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
+    if (!rawAnswer) {
       return res.status(502).json({ error: "沒有取得回答內容", detail: data });
     }
+    const answer = sanitizeForSpeech(rawAnswer).slice(0, 800);
     res.json({ answer });
   } catch (err) {
     console.error("連線 Gemini 服務失敗:", err);
