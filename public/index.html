@@ -3,77 +3,89 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>會說話的人 - AI 問答虛擬人</title>
+<title>學習問答助理</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-brand">
-      <span class="topbar-mark">◆</span>
-      <span class="topbar-title">會說話的人</span>
-      <span class="topbar-sub">AI QA AVATAR</span>
-    </div>
-    <div class="topbar-status" id="topbarStatus">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">連線中</span>
-    </div>
-  </header>
-
-  <main class="app">
-    <section class="panel avatar-panel">
-      <div class="panel-head">
-        <span class="eyebrow">AVATAR</span>
-        <h2>虛擬人</h2>
+  <div class="app-shell">
+    <aside class="sidebar-history">
+      <div class="brand">
+        <div class="brand-mark blueprint">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>AI
+        </div>
+        <div>
+          <div class="brand-title">學習問答助理</div>
+          <div class="brand-sub">STUDENT Q&amp;A SYSTEM</div>
+        </div>
       </div>
-      <div class="avatar-stage" id="avatarStage">
+
+      <button type="button" id="newChatBtn" class="btn btn-primary btn-block blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>＋ 開始新對話
+      </button>
+
+      <div class="history-section">
+        <div class="section-label">對話紀錄</div>
+        <ol class="history-list" id="historyList">
+          <li class="history-empty" id="historyEmpty">還沒有紀錄</li>
+        </ol>
+      </div>
+    </aside>
+
+    <aside class="sidebar-avatar">
+      <div class="avatar-frame blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
         <video id="avatarVideo" class="avatar-video" autoplay playsinline muted></video>
         <audio id="avatarAudio" autoplay></audio>
         <div class="connect-overlay" id="connectOverlay">
           <div class="spinner"></div>
-          <p id="connectStatus">連線中…</p>
+          <p id="connectStatus">AI教師啟動中…</p>
+        </div>
+        <div class="speaking-badge blueprint" id="speakingBadge" hidden>
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <span class="speaking-dots"><span></span><span></span><span></span></span>
+          AI教師模擬中
         </div>
       </div>
-      <div class="control-row">
+
+      <div class="avatar-meta">
+        <div class="avatar-title">AI 學習助理</div>
+        <div class="avatar-sub" id="avatarSub">學習問答助理</div>
+      </div>
+      <span class="tag tag-outline" id="statusTag">連線中</span>
+
+      <div class="avatar-controls">
         <label for="rateRange">語速<span class="control-val" id="rateVal">1.0</span></label>
         <input type="range" id="rateRange" min="0.5" max="2" step="0.1" value="1" />
-      </div>
-      <div class="control-row">
         <label for="volumeRange">音量<span class="control-val" id="volumeVal">1.0</span></label>
         <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="1" />
       </div>
-    </section>
+    </aside>
 
-    <section class="panel qa-panel">
-      <div class="panel-head">
-        <span class="eyebrow">ASK A QUESTION</span>
-        <h2>提問</h2>
+    <main class="chat-main">
+      <div class="chat-scroll" id="chatScroll">
+        <div class="chat-row ai">
+          <div class="chat-label">AI 助理</div>
+          <div class="chat-bubble">你好，我是學習問答助理。請描述你在課業上遇到的問題，我會盡力提供解說與示例。</div>
+        </div>
       </div>
 
-      <form id="askForm" class="ask-form">
+      <form id="askForm" class="chat-input-bar">
         <textarea
           id="questionInput"
-          rows="3"
+          class="input"
+          rows="1"
           maxlength="2000"
-          placeholder="輸入你的問題，例如：質數是什麼？"
+          placeholder="輸入你的問題…"
         ></textarea>
-        <button type="submit" id="askBtn" class="btn btn-primary" disabled>送出問題</button>
+        <button type="submit" id="askBtn" class="btn btn-primary btn-icon blueprint" aria-label="送出" disabled>
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+        </button>
       </form>
-
       <p class="hint" id="hint">正在連線到虛擬人服務…</p>
-
-      <div class="answer-box" id="answerBox" hidden>
-        <span class="eyebrow">ANSWER</span>
-        <p id="answerText"></p>
-      </div>
-
-      <div class="history-head">
-        <span class="eyebrow">RECENT · 最近對話</span>
-      </div>
-      <ol class="history-list" id="historyList">
-        <li class="history-empty" id="historyEmpty">還沒有紀錄</li>
-      </ol>
-    </section>
-  </main>
+    </main>
+  </div>
 
   <script type="module" src="app.bundle.js"></script>
 </body>

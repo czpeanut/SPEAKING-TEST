@@ -5,13 +5,19 @@ import { SimliClient, LogLevel } from "simli-client/dist/client.js";
 
 const PCM_SAMPLE_RATE = 16000;
 const CHUNK_BYTES = 6000; // ~187ms of mono 16-bit PCM at 16kHz, matches the SDK's own example size
+const GREETING = "你好，我是學習問答助理。請描述你在課業上遇到的問題，我會盡力提供解說與示例。";
 
 const videoEl = document.getElementById("avatarVideo");
 const audioEl = document.getElementById("avatarAudio");
 const connectOverlay = document.getElementById("connectOverlay");
 const connectStatus = document.getElementById("connectStatus");
-const topbarStatus = document.getElementById("topbarStatus");
-const statusText = document.getElementById("statusText");
+const speakingBadge = document.getElementById("speakingBadge");
+const statusTag = document.getElementById("statusTag");
+
+const newChatBtn = document.getElementById("newChatBtn");
+const historyList = document.getElementById("historyList");
+const historyEmpty = document.getElementById("historyEmpty");
+const chatScroll = document.getElementById("chatScroll");
 
 const askForm = document.getElementById("askForm");
 const questionInput = document.getElementById("questionInput");
@@ -21,22 +27,92 @@ const volumeRange = document.getElementById("volumeRange");
 const rateVal = document.getElementById("rateVal");
 const volumeVal = document.getElementById("volumeVal");
 const hint = document.getElementById("hint");
-const answerBox = document.getElementById("answerBox");
-const answerText = document.getElementById("answerText");
-const historyList = document.getElementById("historyList");
-const historyEmpty = document.getElementById("historyEmpty");
 
 let simliClient = null;
 let avatarReady = false;
-let speaking = false;
 let stopRequested = false;
+let turnCount = 0;
 
-function setSpeakingUI(isSpeaking) {
-  speaking = isSpeaking;
-  topbarStatus.classList.toggle("speaking", isSpeaking);
-  statusText.textContent = isSpeaking ? "說話中" : avatarReady ? "待機中" : "連線中";
-  askBtn.disabled = isSpeaking || !avatarReady;
+function setStatus(label, variant) {
+  statusTag.textContent = label;
+  statusTag.className = `tag ${variant}`;
 }
+
+function setAskEnabled(enabled) {
+  askBtn.disabled = !enabled;
+}
+
+// ---------- Chat thread ----------
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+  });
+}
+
+function addChatRow(role, text) {
+  const row = document.createElement("div");
+  row.className = `chat-row ${role}`;
+
+  const label = document.createElement("div");
+  label.className = "chat-label";
+  label.textContent = role === "user" ? "你" : "AI 助理";
+
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble";
+  bubble.textContent = text;
+
+  row.append(label, bubble);
+  chatScroll.appendChild(row);
+  scrollToBottom();
+  return row;
+}
+
+function addThinkingRow() {
+  const row = document.createElement("div");
+  row.className = "chat-row ai";
+  row.innerHTML = `<div class="chat-label">AI 助理</div><div class="chat-bubble chat-bubble-thinking">思考中…</div>`;
+  chatScroll.appendChild(row);
+  scrollToBottom();
+  return row;
+}
+
+function addHistoryEntry(question, targetRow) {
+  historyEmpty.hidden = true;
+  turnCount += 1;
+
+  const item = document.createElement("li");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "history-item";
+
+  const title = document.createElement("span");
+  title.className = "history-title";
+  title.textContent = question.length > 24 ? `${question.slice(0, 24)}…` : question;
+
+  const time = document.createElement("span");
+  time.className = "history-time";
+  time.textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+
+  btn.append(title, time);
+  btn.addEventListener("click", () => {
+    targetRow.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+
+  item.appendChild(btn);
+  historyList.prepend(item);
+}
+
+function resetChat() {
+  chatScroll.innerHTML = "";
+  addChatRow("ai", GREETING);
+  historyList.innerHTML = "";
+  historyList.appendChild(historyEmpty);
+  historyEmpty.hidden = false;
+  turnCount = 0;
+  hint.textContent = "";
+}
+
+newChatBtn.addEventListener("click", resetChat);
 
 // ---------- Simli avatar connection ----------
 async function connectAvatar() {
@@ -44,7 +120,7 @@ async function connectAvatar() {
   const config = configRes && configRes.ok ? await configRes.json() : { ready: false };
   if (!config.ready) {
     connectStatus.textContent = "尚未設定 Simli";
-    statusText.textContent = "未連線";
+    setStatus("未連線", "tag-outline");
     hint.textContent = "請先在伺服器設定 SIMLI_API_KEY，並執行 npm run setup:simli-face 建立 avatar。";
     return;
   }
@@ -54,7 +130,7 @@ async function connectAvatar() {
   if (!sessionRes.ok) {
     console.error("Simli session error", sessionData);
     connectStatus.textContent = "連線失敗";
-    statusText.textContent = "未連線";
+    setStatus("未連線", "tag-outline");
     const detailMsg =
       sessionData.detail && typeof sessionData.detail === "object"
         ? sessionData.detail.detail || JSON.stringify(sessionData.detail)
@@ -76,7 +152,8 @@ async function connectAvatar() {
     avatarReady = true;
     connectOverlay.hidden = true;
     hint.textContent = "";
-    setSpeakingUI(false);
+    setStatus("線上待命", "tag-accent");
+    setAskEnabled(true);
   });
 
   simliClient.on("error", (err) => {
@@ -89,12 +166,12 @@ async function connectAvatar() {
   } catch (err) {
     console.error(err);
     connectStatus.textContent = "連線失敗";
-    statusText.textContent = "未連線";
+    setStatus("未連線", "tag-outline");
     hint.textContent = "無法連線到虛擬人服務，請重新整理頁面再試一次。";
   }
 }
 
-// ---------- Audio: Piper WAV -> 16kHz PCM16 -> Simli ----------
+// ---------- Audio: Gemini TTS WAV -> 16kHz PCM16 -> Simli ----------
 function floatTo16BitPCM(float32Array) {
   const buffer = new ArrayBuffer(float32Array.length * 2);
   const view = new DataView(buffer);
@@ -110,10 +187,7 @@ function sleep(ms) {
 }
 
 async function synthesizeAndStream(text) {
-  const params = new URLSearchParams({
-    text,
-    rate: rateRange.value,
-  });
+  const params = new URLSearchParams({ text, rate: rateRange.value });
   const res = await fetch(`/api/tts?${params.toString()}`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -136,32 +210,13 @@ async function synthesizeAndStream(text) {
 }
 
 // ---------- Ask Gemini, then speak the answer ----------
-function addHistoryItem(question, answer) {
-  historyEmpty.hidden = true;
-  const item = document.createElement("li");
-  item.className = "history-item";
-
-  const time = document.createElement("span");
-  time.className = "history-time";
-  time.textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false });
-
-  const q = document.createElement("p");
-  q.className = "history-q";
-  q.textContent = question;
-
-  const a = document.createElement("p");
-  a.className = "history-a";
-  a.textContent = answer;
-
-  item.append(time, q, a);
-  historyList.prepend(item);
-}
-
 async function askQuestion(question) {
   hint.textContent = "";
-  answerBox.hidden = true;
-  askBtn.disabled = true;
-  statusText.textContent = "思考中";
+  setAskEnabled(false);
+  setStatus("思考中", "tag-outline");
+
+  addChatRow("user", question);
+  const thinkingRow = addThinkingRow();
 
   try {
     const res = await fetch("/api/ask", {
@@ -174,18 +229,22 @@ async function askQuestion(question) {
       throw new Error(data.error || "問答服務發生錯誤");
     }
 
-    answerText.textContent = data.answer;
-    answerBox.hidden = false;
-    addHistoryItem(question, data.answer);
+    thinkingRow.remove();
+    const answerRow = addChatRow("ai", data.answer);
+    addHistoryEntry(question, answerRow);
 
     stopRequested = false;
-    setSpeakingUI(true);
+    setStatus("說話中", "tag-accent");
+    speakingBadge.hidden = false;
     await synthesizeAndStream(data.answer);
   } catch (err) {
     console.error(err);
+    thinkingRow.remove();
     hint.textContent = err.message || "發生錯誤，請重試。";
   } finally {
-    setSpeakingUI(false);
+    speakingBadge.hidden = true;
+    setStatus(avatarReady ? "線上待命" : "未連線", avatarReady ? "tag-accent" : "tag-outline");
+    setAskEnabled(avatarReady);
   }
 }
 
@@ -201,13 +260,20 @@ askForm.addEventListener("submit", (e) => {
     return;
   }
   questionInput.value = "";
+  questionInput.style.height = "";
   askQuestion(question);
 });
 
 questionInput.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
     askForm.requestSubmit();
   }
+});
+
+questionInput.addEventListener("input", () => {
+  questionInput.style.height = "";
+  questionInput.style.height = `${Math.min(questionInput.scrollHeight, 120)}px`;
 });
 
 rateRange.addEventListener("input", () => (rateVal.textContent = Number(rateRange.value).toFixed(1)));
