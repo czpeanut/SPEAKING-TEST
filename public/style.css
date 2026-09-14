@@ -110,6 +110,7 @@ body {
 }
 .btn svg { display: block; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:not(.btn-primary):hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .btn-primary { background: var(--color-accent); color: var(--color-bg); border-color: var(--color-accent); }
 .btn-primary:hover:not(:disabled) { background: var(--color-accent-600); }
 .btn-primary:active:not(:disabled) { background: var(--color-accent-700); }
@@ -435,9 +436,17 @@ textarea.input { resize: none; }
   max-height: 120px;
 }
 
-.hint {
+.hint-row {
   margin: 0 var(--space-6) var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.hint {
+  margin: 0;
   font-size: 12px;
   color: var(--color-neutral-600);
   min-height: 1.1em;
+  flex: 1;
 }

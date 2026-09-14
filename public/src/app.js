@@ -27,6 +27,7 @@ const volumeRange = document.getElementById("volumeRange");
 const rateVal = document.getElementById("rateVal");
 const volumeVal = document.getElementById("volumeVal");
 const hint = document.getElementById("hint");
+const retryBtn = document.getElementById("retryBtn");
 
 let simliClient = null;
 let avatarReady = false;
@@ -115,27 +116,52 @@ function resetChat() {
 newChatBtn.addEventListener("click", resetChat);
 
 // ---------- Simli avatar connection ----------
+function showConnectFailure(message) {
+  connectStatus.textContent = "連線失敗";
+  setStatus("未連線", "tag-outline");
+  hint.textContent = message;
+  retryBtn.hidden = false;
+}
+
 async function connectAvatar() {
+  retryBtn.hidden = true;
+  connectOverlay.hidden = false;
+  connectStatus.textContent = "AI教師啟動中…";
+  avatarReady = false;
+  setAskEnabled(false);
+
+  if (simliClient) {
+    try {
+      await simliClient.stop();
+    } catch {
+      // already gone
+    }
+    simliClient = null;
+  }
+
   const configRes = await fetch("/api/simli/config").catch(() => null);
   const config = configRes && configRes.ok ? await configRes.json() : { ready: false };
   if (!config.ready) {
-    connectStatus.textContent = "尚未設定 Simli";
-    setStatus("未連線", "tag-outline");
-    hint.textContent = "請先在伺服器設定 SIMLI_API_KEY，並執行 npm run setup:simli-face 建立 avatar。";
+    showConnectFailure("請先在伺服器設定 SIMLI_API_KEY，並執行 npm run setup:simli-face 建立 avatar。");
     return;
   }
 
-  const sessionRes = await fetch("/api/simli/session", { method: "POST" });
+  const sessionRes = await fetch("/api/simli/session", { method: "POST" }).catch((err) => {
+    console.error("Simli session fetch failed", err);
+    return null;
+  });
+  if (!sessionRes) {
+    showConnectFailure("連不上伺服器，請確認網路連線後重試。");
+    return;
+  }
   const sessionData = await sessionRes.json();
   if (!sessionRes.ok) {
     console.error("Simli session error", sessionData);
-    connectStatus.textContent = "連線失敗";
-    setStatus("未連線", "tag-outline");
     const detailMsg =
       sessionData.detail && typeof sessionData.detail === "object"
         ? sessionData.detail.detail || JSON.stringify(sessionData.detail)
         : sessionData.detail;
-    hint.textContent = [sessionData.error, detailMsg].filter(Boolean).join("：");
+    showConnectFailure([sessionData.error, detailMsg].filter(Boolean).join("："));
     return;
   }
 
@@ -151,6 +177,7 @@ async function connectAvatar() {
   simliClient.on("start", () => {
     avatarReady = true;
     connectOverlay.hidden = true;
+    retryBtn.hidden = true;
     hint.textContent = "";
     setStatus("線上待命", "tag-accent");
     setAskEnabled(true);
@@ -158,18 +185,18 @@ async function connectAvatar() {
 
   simliClient.on("error", (err) => {
     console.error("Simli error", err);
-    hint.textContent = "虛擬人連線發生錯誤，請重新整理頁面再試一次。";
+    showConnectFailure("虛擬人連線發生錯誤，請按重試連線。");
   });
 
   try {
     await simliClient.start();
   } catch (err) {
     console.error(err);
-    connectStatus.textContent = "連線失敗";
-    setStatus("未連線", "tag-outline");
-    hint.textContent = "無法連線到虛擬人服務，請重新整理頁面再試一次。";
+    showConnectFailure("無法連線到虛擬人服務，請檢查網路後按重試連線。");
   }
 }
+
+retryBtn.addEventListener("click", connectAvatar);
 
 // ---------- Audio: Gemini TTS WAV -> 16kHz PCM16 -> Simli ----------
 function floatTo16BitPCM(float32Array) {
@@ -259,6 +286,17 @@ askForm.addEventListener("submit", (e) => {
     hint.textContent = "請先輸入問題。";
     return;
   }
+
+  // Must call play() synchronously inside the real user gesture (this submit
+  // handler), not after — mobile browsers (iOS Safari especially) revoke
+  // autoplay permission once too much async time passes. Gemini TTS alone
+  // takes 7-17s, well past that window, so by the time Simli's audio track
+  // actually arrives the browser would otherwise silently block playback:
+  // the (muted) video still renders, but no sound — which is exactly what
+  // was reported. Priming play() now on the real gesture keeps the element
+  // "unlocked" for when the track shows up later.
+  audioEl.play().catch(() => {});
+
   questionInput.value = "";
   questionInput.style.height = "";
   askQuestion(question);
