@@ -1,56 +1,59 @@
 # 開發紀錄與技術交接文件
 
-這份文件記錄「會說話的人」這個專案從最初構想到目前狀態的完整技術決策過程，包含試過但放棄的方案、為什麼放棄、已修好的 bug 與根因、還沒解決的問題。目的是讓合併到其他專案時不會丟失這些脈絡——很多決策背後有實測數據支撐，不是憑感覺選的。
+這份文件記錄這個專案從最初構想到目前狀態的完整技術決策過程，包含試過但放棄的方案、為什麼放棄、已修好的 bug 與根因、還沒解決的問題。目的是讓合併到其他專案時不會丟失這些脈絡——很多決策背後有實測數據支撐，不是憑感覺選的。
 
-最後更新對應的 commit：`346db8a`（分支 `claude/zealous-thompson-93pmdy`）。
+最後更新對應的 commit：本次批次影片生成改版（分支 `claude/zealous-thompson-93pmdy`）。**第 1-5 節是目前架構；第 6 節之後保留了完整的歷史演進記錄（包含已經放棄的即時問答虛擬人架構），合併專案時想知道「為什麼不是 X 方案」可以往下翻。**
 
 ---
 
-## 1. 專案是什麼
+## 1. 專案是什麼（目前版本）
 
-使用者在網頁輸入問題 → Gemini 回答 → 虛擬人（用真人照片預先建立的 avatar）把答案即時唸出來、嘴型同步。目前介面是「AI 學習問答助理」的樣式（Industry 藍圖風格設計系統），左側對話紀錄、中間虛擬人、右側對話串。
+使用者上傳一張正臉照片、輸入一段文件內容（貼上文字或上傳 .txt）→ 後端把文字合成語音、再把「照片＋語音」交給批次影片生成服務 → 回傳一支這張照片「講出這段內容」的 mp4 影片，可以線上播放或下載。**不是即時互動**：送出後要等待約 1-2 分鐘生成。
 
-## 2. 目前架構（最終版）
+這是從更早的「即時問答虛擬人」（打字問問題、Gemini 即時回答、虛擬人用 WebRTC 即時嘴型同步唸出來）改版而來——需求從「即時互動」變成「輸入文件、拿到影片檔」，不再需要即時性，因此把 Simli 的即時串流整套換成批次影片生成 API（D-ID），詳見第 6.4 節。
+
+## 2. 目前架構
 
 ```
-使用者輸入問題
+使用者上傳照片（存 localStorage，下次免重傳）+ 貼上/上傳文件文字
       │
       ▼
-POST /api/ask ──────► Gemini API (gemini-3.6-flash)
-      │                 系統指令要求：簡短口語、無 Markdown/LaTeX
-      │◄──────────────  回傳文字答案（後端再做一層符號清洗保險）
+POST /api/video/generate { photo: dataURL, text }
+      │  伺服器立即回傳 { jobId }，背景非同步處理：
       ▼
-顯示答案文字 + 加入對話紀錄
+sanitizeForSpeech(text) 清掉 Markdown/LaTeX 符號
       ▼
-GET /api/tts?text=... ──► Gemini TTS API (gemini-2.5-flash-preview-tts)
-      │                    男聲 "Puck"，回傳無檔頭 L16 PCM
-      │◄───────────────── 後端補上 WAV 檔頭回傳
+synthesizeSpeech() ──────► Gemini TTS API (gemini-2.5-flash-preview-tts)
+      │                     男聲 "Puck"，回傳無檔頭 L16 PCM
+      │◄──────────────────  後端補上 WAV 檔頭
       ▼
-瀏覽器端：decodeAudioData 解碼 → 重取樣成 16kHz PCM16
+把 WAV 存到暫存目錄，用 /tmp-audio/<jobId>.wav 這個路徑公開提供
       ▼
-simliClient.sendAudioData()（分塊、模擬即時節奏送出）
+POST https://api.d-id.com/talks { source_url: 照片dataURL, script: { type: "audio", audio_url } }
+      │
       ▼
-Simli WebRTC (LiveKit mode) 即時生成嘴型同步影像
+輪詢 GET /talks/{id} 直到 status === "done"，拿到 result_url
       ▼
-<video> 顯示畫面、<audio> 播放聲音
+前端輪詢 GET /api/video/status/:jobId，顯示 <video src=result_url> + 下載連結
 ```
 
-後端（`server.js`）只做三件事，金鑰全部留在伺服器端：
-1. `POST /api/ask`：呼叫 Gemini 拿文字答案
-2. `GET /api/tts`：呼叫 Gemini TTS 拿語音，包裝成 WAV
-3. `POST /api/simli/session`：用 `SIMLI_API_KEY` 換一次性 session token 給前端，前端用這個 token 直連 Simli，金鑰本身不會出現在瀏覽器
+後端（`server.js`）只做這些事，金鑰全部留在伺服器端：
+1. `POST /api/video/generate`：驗證輸入、建立工作、回傳 `jobId`，背景跑完整流程（TTS → 暫存音檔 → D-ID 建立工作 → 輪詢）
+2. `GET /api/video/status/:id`：前端輪詢用，回傳工作目前狀態（`queued`/`synthesizing`/`rendering`/`done`/`error`）與完成後的 `videoUrl`
+3. `/tmp-audio/*`：暫存語音檔的靜態路由，只給 D-ID 抓取用，工作結束或 15 分鐘後會被清掉
+
+工作狀態存在記憶體（`Map`），不是資料庫——重啟伺服器會遺失所有進行中的工作，這對單一使用者的小工具是可接受的取捨，但合併到多實例/多 worker 的專案時要注意（見第 8 節）。
 
 ## 3. 檔案結構
 
 ```
-server.js                      後端：/api/ask、/api/tts、/api/simli/*
+server.js                      後端：/api/video/generate、/api/video/status/:id
 render.yaml                    Render 部署設定（Blueprint）
-package.json                   npm scripts：build（打包前端）、setup:simli-face
+package.json                   npm scripts：build（打包前端）
 scripts/
   build-client.js              esbuild 打包 public/src/app.js → public/app.bundle.js
-  setup-simli-face.js          一次性腳本：把照片送去 Simli 建立 avatar，face id 寫進 .env
 public/
-  index.html                   頁面結構（Industry 設計系統）
+  index.html                   頁面結構（Industry 設計系統，單卡片版面）
   style.css                    設計系統 tokens + 版面（藍圖風格：直角、四角測繪標記）
   src/app.js                   前端邏輯原始碼（會被打包成 app.bundle.js，不要直接改 bundle）
   app.bundle.js                打包產物，.gitignore 排除，每次改 src/app.js 後要重跑 npm run build
@@ -61,31 +64,14 @@ public/
 
 ## 4. API 串接細節
 
-### 4.1 Gemini 問答（`/api/ask` → Gemini generateContent）
-
-```
-POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent
-Header: x-goog-api-key: <GEMINI_API_KEY>
-Body:
-{
-  "system_instruction": { "parts": [{ "text": "<語音助理系統指令，見 server.js SPEECH_SYSTEM_INSTRUCTION>" }] },
-  "contents": [{ "parts": [{ "text": "<使用者問題>" }] }],
-  "generationConfig": { "maxOutputTokens": 2048 }
-}
-```
-
-**踩過的坑**：`gemini-3.6-flash` 是會「思考」的模型，`thoughtsTokenCount` 會吃掉 `maxOutputTokens` 的額度。原本設 300 導致 `finishReason: MAX_TOKENS`、答案在句子中間被切斷（思考用掉 285/300）。改成 2048 才穩定留出空間給思考＋可見答案兩者。`thinkingConfig.thinkingBudget` 試過設低值（128）或 0，0 會被 API 拒絕（400 INVALID_ARGUMENT），128 也沒有嚴格生效（實測還是用了 564 tokens 思考）——這個參數目前看起來不可靠，不要依賴它來省 token，直接拉高 `maxOutputTokens` 上限比較實際。
-
-回答文字經過 `sanitizeForSpeech()`（`server.js`）清洗 Markdown/LaTeX 符號後才回傳，因為答案會被直接朗讀，殘留的 `**`、`$\frac{}{}` 這類符號唸出來會是逐字唸符號。系統指令已經要求模型不要輸出這些，清洗是保險，不是主要防線。
-
-### 4.2 Gemini 語音合成（`/api/tts` → Gemini TTS generateContent）
+### 4.1 Gemini 語音合成（`synthesizeSpeech()` → Gemini TTS generateContent）
 
 ```
 POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}:generateContent
 Header: x-goog-api-key: <GEMINI_API_KEY>
 Body:
 {
-  "contents": [{ "parts": [{ "text": "<答案文字，語速用自然語言前綴>" }] }],
+  "contents": [{ "parts": [{ "text": "<文件內容，已清洗過 Markdown/LaTeX>" }] }],
   "generationConfig": {
     "responseModalities": ["AUDIO"],
     "speechConfig": { "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": "Puck" } } }
@@ -93,76 +79,49 @@ Body:
 }
 ```
 
-回應是 base64 的**無檔頭 L16 PCM**（`mimeType` 字串裡帶 `rate=24000`），後端 `wavHeader()` 手動組 44-byte WAV 檔頭再回傳給前端，因為瀏覽器的 `decodeAudioData` 需要完整的檔案容器格式，不能直接吃裸 PCM。
+回應是 base64 的**無檔頭 L16 PCM**（`mimeType` 字串裡帶 `rate=24000`），後端 `wavHeader()` 手動組 44-byte WAV 檔頭再存成檔案，因為 D-ID 需要一個完整的音檔容器格式，不能直接吃裸 PCM。
 
-語速控制**不是精確倍率**，是靠在文字前面加自然語言指示達成（`withPaceDirection()`）：
-- `rate <= 0.85` → 「請用較慢的語速說：」
-- `rate >= 1.15` → 「請用較快的語速說：」
+Gemini TTS **不支援真正的逐段串流**：測過 `streamGenerateContent?alt=sse`，回應還是整段音訊一次送達（`chunks=1`），沒有邊生成邊送的效果——但批次影片生成本來就不需要串流，這個限制已經不是問題（舊架構下這是延遲的主因，見第 6.1、8 節）。
 
-實測同一句話：慢 12.1 秒／正常 7.2 秒／快 5.3 秒，指示確實有效，但不是線性可控的倍率。
+### 4.2 D-ID 批次影片生成（`createTalk()` / `pollTalk()`）
 
-**已知延遲數據**（線上 Render 實測，2026-09-18）：
-- `/api/ask`：約 3.5 秒
-- `/api/tts`：約 7-17 秒（依答案長度，見下方「延遲根因」）
-- 總計使用者從送出問題到聽到聲音：**約 14-20 秒**
-
-Gemini TTS **不支援真正的逐段串流**：測過 `streamGenerateContent?alt=sse`，回應還是整段音訊一次送達（`chunks=1`），沒有邊生成邊送的效果。
-
-### 4.3 Simli 虛擬人（session token + 前端 WebRTC）
-
-**後端**（`server.js` `/api/simli/session`）：
 ```
-POST https://api.simli.ai/compose/token
-Header: x-simli-api-key: <SIMLI_API_KEY>
-Body: { "faceId": "<SIMLI_FACE_ID>", "apiVersion": "v2", "audioInputFormat": "pcm16" }
-回應: { "session_token": "..." }
-```
-`apiVersion` 是固定值 `"v2"`（OpenAPI 標記為 `const`），跟 face 是 Legacy 還是 Trinity 無關，不用因為 face 類型改這個欄位。
-
-**前端**（`public/src/app.js`）：
-```js
-import { SimliClient, LogLevel } from "simli-client/dist/client.js"; // 注意路徑，見下方 bug 章節
-const simliClient = new SimliClient(session_token, videoEl, audioEl, null, LogLevel.WARN, "livekit");
-await simliClient.start();
-simliClient.sendAudioData(pcm16Chunk); // 16kHz mono PCM16，~187ms 一塊，模擬即時節奏送出
-await simliClient.stop(); // 斷線/重連時呼叫
+POST https://api.d-id.com/talks
+Header: Authorization: Basic <DID_API_KEY>
+Body:
+{
+  "source_url": "data:image/jpeg;base64,...",   ← 照片，直接用 data URL，D-ID 支援
+  "script": { "type": "audio", "audio_url": "https://<你的網域>/tmp-audio/<jobId>.wav" },
+  "config": { "stitch": true, "result_format": "mp4" }
+}
+回應: { "id": "tlk_xxx", "status": "created", ... }
 ```
 
-音訊格式要求：**16kHz、mono、PCM16、無檔頭**。Gemini TTS 回傳的是 24kHz，前端用 `OfflineAudioContext(1, 1, 16000)` 的 `decodeAudioData()` 順便完成重取樣（`decodeAudioData` 會自動採樣到 context 指定的 sampleRate，這個技巧不需要額外的重取樣函式庫）。
+**關鍵限制**：`audio_url` 必須是 D-ID 的伺服器能連到的網址，**不支援 data URL**（跟 `source_url` 不同），所以生成的語音檔一定要先暫存在某個公開可存取的地方（這個專案是自己的 Express 伺服器 + `/tmp-audio` 靜態路由）。這也是為什麼本機用 `localhost` 跑無法真的生成影片——D-ID 連不進 `localhost`（見第 8 節）。
 
-### 4.4 Simli face 建立（`scripts/setup-simli-face.js`，一次性本機操作）
+輪詢：
+```
+GET https://api.d-id.com/talks/{id}
+Header: Authorization: Basic <DID_API_KEY>
+回應: { "status": "created" | "started" | "done" | "error" | "rejected", "result_url": "...", ... }
+```
+`status === "done"` 才有 `result_url`（mp4 直連網址，D-ID 的 S3 之類的儲存，有效期間有限，不是永久網址——完成後應該讓使用者立即下載，不要指望這個網址長期有效）。`server.js` 用 `POLL_INTERVAL_MS = 3000`、`POLL_TIMEOUT_MS = 5 分鐘` 輪詢，超時會回傳錯誤。
 
-這是**唯一一個免費方案能用的路徑**，過程踩了不少坑：
+**Authorization 格式**：D-ID 儀表板給的 API key 字串本身就是 `Basic` scheme 期待的值，直接接在 `Basic ` 後面即可，不需要自己再 base64 編碼一次。
 
-1. **Trinity（新版 Gaussian-splat avatar）在免費方案上完全不能用**：呼叫 `POST /faces/trinity` 直接回 403「max number of GS Faces for your current subscription」，即使帳號目前 0 個 face 也一樣——這是方案限制，不是額度用完。
-2. **改用 Legacy pipeline**（官方 OpenAPI 標記 `deprecated: true`，但目前唯一免費可用）：
-   ```
-   POST https://api.simli.ai/faces/legacy?face_name=<name>
-   Header: x-simli-api-key: <key>
-   Body: multipart/form-data，欄位 image（僅接受 JPEG/PNG，不接受 WEBP，需要先轉檔）
-   回應: { "character_uid": "<face_id>", "warnings": [...] }
-   ```
-   這是**非同步**的，要輪詢：
-   ```
-   GET https://api.simli.ai/faces/legacy/generation_status?face_id=<id>
-   回應: { "status": "processing" | "completed", "face_id": "..." }
-   ```
-   實測處理時間約 3-5 分鐘。`scripts/setup-simli-face.js` 已經包含完整的提交＋輪詢邏輯。
-3. 如果哪天 Legacy pipeline 也被下架，代表免費方案已經沒有自訂照片的路徑了，屆時只能升級付費方案或改用 Simli 提供的預設人像。
+**計費**：按生成秒數（額度）計費，是付費服務，見第 9 節。
 
 ## 5. 環境變數完整清單
 
 | 變數 | 必要 | 說明 | 取得方式 |
 |---|---|---|---|
-| `GEMINI_API_KEY` | 是 | 問答與語音共用同一把 | https://aistudio.google.com/apikey |
-| `SIMLI_API_KEY` | 是 | Simli 帳號 key | https://www.simli.com（免費方案每月 50 分鐘） |
-| `SIMLI_FACE_ID` | 是 | `setup:simli-face` 產生，或手動貼 | — |
-| `GEMINI_MODEL` | 否，預設 `gemini-3.6-flash` | 問答模型 | 若這個 model 被下架，錯誤訊息通常會直接告訴你該換成哪個 |
+| `GEMINI_API_KEY` | 是 | 語音合成用 | https://aistudio.google.com/apikey |
+| `DID_API_KEY` | 是 | D-ID 帳號 key，直接貼儀表板上顯示的字串 | https://www.d-id.com（付費，新帳號通常有試用額度） |
 | `GEMINI_TTS_MODEL` | 否，預設 `gemini-2.5-flash-preview-tts` | 語音合成模型 | — |
 | `GEMINI_TTS_VOICE` | 否，預設 `Puck` | Gemini 內建語音角色 | Gemini API 文件列有完整清單 |
 | `PORT` | 否，預設 `3000` | — | — |
 
-`.env` 不會被 commit（`.gitignore`），合併專案時記得把這幾把 key 手動搬過去，不會隨 git 走。
+`.env` 不會被 commit（`.gitignore`），合併專案時記得把這幾把 key 手動搬過去，不會隨 git 走。**`SIMLI_API_KEY`、`SIMLI_FACE_ID`、`GEMINI_MODEL` 是舊架構（即時問答虛擬人）留下的變數，目前程式碼完全沒有讀取，可以從 `.env` 刪掉。**
 
 ## 6. 開發歷程：試過並放棄的方案
 
@@ -200,9 +159,25 @@ await simliClient.stop(); // 斷線/重連時呼叫
 |---|---|---|
 | 1 | 紫色漸層卡片式（最初版本） | 使用者反饋「太醜」 |
 | 2 | 「CODEX STUDY」風格（白底、藍色主色、細線表格） | 中繼版本 |
-| 3 | **Industry 藍圖風格**（現行） | 使用者提供 Claude Design 畫布設計稿，照樣式重新實作：方形直角、四角測繪標記線（`.blueprint` + `.corner` class）、Barlow Condensed 標題字體、steel-blue 主色 `#5980a6`、三欄式版面（對話紀錄／虛擬人／對話串）。設計稿本身的多組對話切換、setTimeout 假回覆是 demo 用假資料，已改接真實 Gemini/Simli 功能，不是照抄 mockup 行為 |
+| 3 | Industry 藍圖風格，三欄式問答介面 | 使用者提供 Claude Design 畫布設計稿，照樣式重新實作：方形直角、四角測繪標記線（`.blueprint` + `.corner` class）、Barlow Condensed 標題字體、steel-blue 主色 `#5980a6`、三欄式版面（對話紀錄／虛擬人／對話串）。設計稿本身的多組對話切換、setTimeout 假回覆是 demo 用假資料，已改接真實 Gemini/Simli 功能，不是照抄 mockup 行為 |
+| 4 | **同一套設計 tokens，改成單卡片版面（現行）** | 拿掉問答用的三欄（對話紀錄／虛擬人／對話串），改成「上傳照片＋輸入文件＋產生按鈕＋結果影片」的單卡片流程，配合 6.4 節的架構改版。`.blueprint`／`.corner`／字體／色票等 design tokens 完全沿用，只是版面從「即時對話」改成「表單送出→等待→結果」 |
+
+### 6.4 從即時問答虛擬人改版成批次影片生成
+
+這是目前架構（第 1-5 節）的由來。第 6.2 節「中途考慮過但沒有實作的方向」列過「預錄影片＋本地 TTS」和「ElevenLabs 聲音克隆」，但實際採用的是另一條路：
+
+**觸發改版的需求變化**：原本是「使用者打字問問題，虛擬人即時回答」，需要低延遲、需要 WebRTC 即時串流（Simli），也因此繼承了「手機連線失敗」「自動播放權限」這些即時串流特有的問題（見第 8 節）。使用者後來把需求改成「輸入一段文件，拿到一支說話影片檔」——不再需要使用者即時提問、Gemini 即時回答這一層，也不需要在幾秒內看到嘴型同步，可以接受等待。這個轉變讓「即時性不夠」曾經用來否決正規批次影片生成服務（D-ID/HeyGen 這類）的理由不再成立，反而變得比 Simli 更適合：Simli 的產品定位本來就是即時串流用的 SDK，不是拿來出檔案。
+
+**選擇 D-ID 而不是重新設計成本地嘴型模擬或聲音克隆**：
+- D-ID 的 `/talks` API 原生支援「照片 + 音檔 URL → 嘴型同步影片」（`script.type: "audio"`），剛好可以直接接上既有的 Gemini TTS 輸出（見 4.2 節），不需要重新解決男聲音色的問題（Puck 男聲維持不變）。
+- 比起本地嘴型模擬（MediaPipe canvas 疊圖），D-ID 是用真正的生成模型做嘴型，畫質可預期比第 6.2 節第一輪嘗試（「非常不自然的色塊」）好非常多——這正是最初放棄純前端方案、改走 Simli 的原因，D-ID 提供了同等級的生成品質，但用在批次影片而不是即時串流。
+- 沒有採用 HeyGen：改版當下沒有花時間做逐一 API 比較，D-ID 的 REST API 形狀（`source_url` + `script` → 非同步 job → 輪詢）簡單直接、文件清楚，優先選了它；如果之後對影片品質或費率不滿意，HeyGen 的 talking-photo/avatar API 是值得比較的替代方案，但目前沒有實測數據。
+- **拿掉的東西**：`simli-client` npm 套件（含第 7 節 bug #9 的繞路 workaround，現在不需要了）、`/api/simli/config`、`/api/simli/session`、`scripts/setup-simli-face.js`、`SIMLI_API_KEY`／`SIMLI_FACE_ID` 環境變數、`/api/ask`（Gemini 問答——新流程沒有「提問」這個概念，文件內容本身就是要唸出來的逐字稿，不需要 Gemini 生成回答文字）。
+- **保留的東西**：Gemini TTS（`synthesizeSpeech()`，邏輯完全沒變，只是輸出從「即時分塊送給 Simli」改成「整段存成 WAV 檔案」）、`sanitizeForSpeech()`（文件內容一樣可能夾雜 Markdown）、Industry 設計系統的視覺語言與「AI教師啟動中」「AI教師模擬中」這兩個狀態文案（沿用到新的「合成語音中」「D-ID 生成影片中」兩個階段）。
 
 ## 7. 已修復的 Bug（含根因）
+
+> 以下 bug 大多是在「即時問答虛擬人」（Simli）架構下發現並修復的，改版成批次影片生成（第 6.4 節）後，#4、#7、#8、#9 這幾個 Simli 專屬的 bug 已經隨著 Simli 被移除而不再適用，保留紀錄是因為背後的根因（例如自動播放權限、套件路徑問題）換一個情境還是可能踩到。
 
 | # | 現象 | 根因 | 修法 | Commit |
 |---|---|---|---|---|
@@ -218,23 +193,25 @@ await simliClient.stop(); // 斷線/重連時呼叫
 
 ## 8. 已知未解決的問題
 
-- **手機連線失敗**：使用者回報「手機版都會連線失敗」。目前只做了 bug #7、#8 的修復（可能有幫助但未直接針對此問題驗證），**根本原因未確認**。合理懷疑跟 Simli 的 WebRTC/WebSocket 連線在行動網路（4G/5G NAT、部分 Wi-Fi 防火牆）比桌機更容易被擋有關，但沒有實機測試數據佐證。這個沙盒環境本身的網路政策也明確不支援 WebSocket（`/root/.ccr/README.md` 有寫），所以 Claude 這端完全無法重現/驗證 Simli 連線問題，所有相關修復都只能靠使用者實機回報。
-- **語音生成延遲 ~14-20 秒**：根因是 Gemini TTS 生成時間本身（無串流），跟 Simli 或介面無關。第 6.2 節列的「預錄影片＋本地 TTS」與「逐句 pipeline」是已討論但未實作的解法，使用者要求先穩定既有 bug 再談。
-- **桌面版是否真的解決靜音問題未確認**：bug #7 的修法理論上桌面瀏覽器也適用（同一套瀏覽器自動播放權限機制），但因為這個沙盒連不上 Simli 的 WebSocket，無法端到端驗證，只驗證了程式邏輯本身（按鈕點擊、重連流程），沒有驗證「桌面瀏覽器實際播放出聲音」這件事。
-- **Simli Legacy face pipeline 是 deprecated API**：官方隨時可能下架，屆時免費方案將沒有自訂照片的路徑（見 6.2 節）。
+- **本機開發無法端到端測試影片生成**：D-ID 需要能連到 `audio_url` 這個網址抓音檔，`localhost` 對 D-ID 的伺服器來說不可達。本機可以測到「工作有沒有成功送出、輪詢邏輯對不對、前端狀態顯示對不對」，但實際「有沒有生成出一支真的影片」只能在有公開網址的部署環境（如 Render）驗證。如果要在本機完整測試，需要用 ngrok/cloudflared 這類工具開一個對外的隧道網址。
+- **D-ID 影片工作狀態存在記憶體、非持久化**：`server.js` 的 `jobs` 是一個 `Map`，伺服器重啟或（未來）多實例部署時，進行中的工作會直接遺失、使用者輪詢會拿到 404。目前是單一小工具、單一 Render instance，這個取捨還算合理；合併到多 worker/多實例的專案時，這裡需要換成 Redis 或資料庫之類的共享狀態。
+- **`result_url` 有效期未知/未長期驗證**：D-ID 回傳的 `result_url` 是他們儲存空間的直連網址，官方文件沒有明確保證多久後失效，這個專案的假設是「使用者完成後應該立即下載，不要指望這個網址長期可用」，但沒有實測過確切的失效時間。
+- **這次改版沒有做真實的 D-ID `/talks` 端到端測試**：因為需要一把付費的 `DID_API_KEY` 和一個能被 D-ID 存取的公開網址，這兩者在開發當下都不具備。已驗證的是：伺服器啟動、靜態頁面、`/api/video/generate` 的輸入驗證邏輯（見第 7 節下方測試記錄）。**實際部署後第一次使用時，務必確認整條 pipeline（TTS → 暫存音檔 → D-ID 建立工作 → 輪詢 → 影片能播放）真的跑得通**，如果 D-ID 的實際 request/response 格式跟文件描述有出入，`createTalk()`／`pollTalk()`（`server.js`）是要修的地方。
+- **文字轉語音仍需 7-17 秒、D-ID 生成再疊加約 30 秒到 1-2 分鐘**：整體使用者等待時間可能到 2-3 分鐘，沒有做「先給預覽再補完整影片」之類的體驗優化。
 
 ## 9. 費用參考（2026-09 查證，會浮動）
 
-- **Simli**：免費方案每月 50 分鐘，超過後約 $0.009/分鐘（約 NT$0.3/分鐘）
-- **Gemini**：問答與 TTS 都是用量計費，確切費率請查 https://ai.google.dev/pricing （當時沒有特別記錄費率數字）
+- **D-ID**：按生成影片秒數的額度計費，方案從約 $4.7/月起（約 NT$150/月），約 15 秒影片／1 點數，確切費率以 https://www.d-id.com/pricing 為準——**需要付費帳號**，新註冊通常有一次性試用額度可以先測試
+- **Gemini TTS**：用量計費，確切費率請查 https://ai.google.dev/pricing
 - **Render**：免費方案，閒置約 15 分鐘會休眠，下次造訪冷啟動約十幾秒到一分鐘
-- **ElevenLabs**（若採用聲音克隆，尚未實作）：Starter $6/月起（約 NT$190）才能用 Instant Voice Clone，另外按字數計費（Flash 模型約 NT$1.6/1000 字元）
+- 以下是舊架構（即時問答虛擬人）留下的參考數字，目前已不適用，僅供對照：**Simli** 免費方案每月 50 分鐘，超過後約 $0.009/分鐘；**ElevenLabs**（聲音克隆，從未採用）Starter $6/月起
 
 ## 10. 合併到其他專案時的檢查清單
 
-- [ ] 三把環境變數（`GEMINI_API_KEY`、`SIMLI_API_KEY`、`SIMLI_FACE_ID`）要手動搬過去，不會隨 git 走
-- [ ] `SIMLI_FACE_ID` 綁定「這一張照片」＋「這個 Simli 帳號」，換照片或換帳號要重跑 `npm run setup:simli-face`
+- [ ] 兩把環境變數（`GEMINI_API_KEY`、`DID_API_KEY`）要手動搬過去，不會隨 git 走
 - [ ] 部署環境要能跑 `npm run build`（esbuild 打包 `public/src/app.js` → `public/app.bundle.js`），純靜態檔案不會自動反映 `src/` 的修改
-- [ ] 如果目標專案也用 Express，注意 `server.js` 目前把 `Cache-Control: no-cache` 設成全域 middleware（見 bug #1），合併時如果有其他靜態資源想被快取，這個全域設定需要調整成只針對 `public/` 或特定副檔名
-- [ ] 如果目標專案的 Node 版本或套件管理方式不同，注意 `simli-client` 套件本身的已知 bug（見 bug #9），import 路徑要維持 `simli-client/dist/client.js` 而不是套件根目錄
-- [ ] `voices/`、`vendor/`、`piper_service.py`、`requirements.txt`、`scripts/setup-voices.js` 這些是**舊架構（Piper）的殘留**，已在 `b6e5e88` 這個 commit 移除，如果合併時看到舊分支/舊 commit 裡有這些檔案，不要重新引入
+- [ ] 部署環境要有**公開可連到的網址**，D-ID 才能抓到暫存的語音檔（`/tmp-audio/*`）；純內網／本機環境測不了完整流程（見第 8 節）
+- [ ] 如果目標專案也用 Express，注意 `server.js` 目前把 `Cache-Control: no-cache` 設成全域 middleware，合併時如果有其他靜態資源想被快取，這個全域設定需要調整成只針對 `public/` 或特定副檔名
+- [ ] `jobs`（記憶體內的工作狀態 Map）在多實例部署下會不一致，見第 8 節
+- [ ] `SIMLI_API_KEY`、`SIMLI_FACE_ID`、`GEMINI_MODEL`、`simli-client` 套件、`scripts/setup-simli-face.js`、`/api/ask`、`/api/simli/*` 都是**舊架構（即時問答虛擬人）的殘留**，已在這次改版移除，如果合併時看到舊分支/舊 commit 裡有這些，不要重新引入
+- [ ] `voices/`、`vendor/`、`piper_service.py`、`requirements.txt`、`scripts/setup-voices.js` 是**更早一版架構（Piper 本地語音）的殘留**，已在 `b6e5e88` 這個 commit 移除，同樣不要重新引入

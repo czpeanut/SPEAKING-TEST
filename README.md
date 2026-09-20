@@ -1,54 +1,45 @@
-# 會說話的人 AI QA Avatar
+# 照片說話影片產生器
 
-輸入問題，Gemini 回答，虛擬人（用你自己的照片預先建立）把答案唸出來。介面是「學習問答助理」三欄式版面：左側對話紀錄、中間虛擬人、右側對話串。
+上傳一張照片、輸入一段文件內容，產生一支這張照片「講出這段內容」的影片，可以下載。
 
 > 完整的技術決策過程、試過並放棄的方案、已修復 bug 的根因、還沒解決的問題，見 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。要合併這個 repo 到其他專案之前建議先看過。
 
 ## 技術架構
 
-- **問答**：[Gemini API](https://ai.google.dev) 產生答案。系統指令要求它用簡短口語回答、不要 Markdown 或 LaTeX，因為答案會被直接唸出來；後端另有一層清洗當保險。
-- **語音**：Gemini 的 TTS 模型（男聲 `Puck`）。回傳無檔頭的 L16 PCM，後端補上 WAV 檔頭再送給前端。
-- **畫面**：[Simli](https://www.simli.com) 的即時串流虛擬人 API。照片只需**離線處理一次**（`npm run setup:simli-face`），之後每次回答，前端把音訊重取樣成 16kHz PCM16 餵給 Simli，透過 WebRTC 取回嘴型同步的影像。
-- **後端**：Node.js + Express，只做三件事：呼叫 Gemini 取得答案、呼叫 Gemini TTS 取得語音、用 Simli API key 換短效 session token 給前端（金鑰全部留在伺服器端）。
+- **語音**：[Gemini API](https://ai.google.dev) 的 TTS 模型（男聲 `Puck`）把輸入的文字合成成語音。回傳無檔頭的 L16 PCM，後端補上 WAV 檔頭。
+- **影片**：[D-ID](https://www.d-id.com) 的 `/talks` API，用「照片 + 一段音檔」批次生成嘴型同步的說話影片（非即時串流，是送出工作後等待、輪詢完成）。
+- **後端**：Node.js + Express。收到照片與文字後：呼叫 Gemini TTS 產生語音檔、暫存並提供一個可公開存取的網址、把這個網址連同照片交給 D-ID 建立影片工作、輪詢直到完成，回傳影片網址給前端下載/播放。金鑰全部留在伺服器端。
+- **前端**：純 JS，沒有框架。上傳照片（存在瀏覽器 localStorage 方便下次直接用）、貼上或上傳文字檔、送出後輪詢工作狀態、完成後顯示影片與下載按鈕。
 
-## 為什麼語音不是自己跑模型
+## 為什麼不是即時虛擬人（Simli）
 
-本來用的是本機的 Piper 神經網路語音合成。中文男聲（chaowen）需要拼音注音系統（g2pW + BERT 分詞器），實測記憶體：
-
-| 階段 | 記憶體 |
-|---|---|
-| 載入語音模型 | 134 MB |
-| 載入中文注音元件 | 424 MB |
-| 長句合成峰值 | **583 MB** |
-
-加上 Node 約 70MB，峰值超過 650MB，而 Render 免費方案上限是 512MB——服務會被系統反覆 OOM 強制關閉，表現出來就是間歇性的「語音合成失敗」。女聲（huayan）用 espeak 注音不需要 BERT 所以沒事，但就沒有男聲可選。
-
-改用 Gemini TTS 後：記憶體降到 **62MB**、音高更低沉（129Hz vs Piper 男聲 154Hz）、不需要 Python 執行環境，而且速度沒有變慢——Piper 跑在 Render 免費方案的共用 CPU 上，同樣長度本來就要 9 秒左右。
+這個專案最早是「即時問答虛擬人」（輸入問題、Gemini 回答、虛擬人即時唸出來），需要 WebRTC 串流所以對「所有人的網路環境都要能穩定連線」很敏感，也踩過手機連線失敗的問題（見 `DEVELOPMENT.md`）。現在的需求改成「輸入文件、拿到一支影片檔」——不需要即時互動、可以接受生成要等一段時間，因此改用批次影片生成 API（D-ID），架構更單純，也不再有 WebRTC 連線失敗的問題。
 
 ## 事前準備
 
 1. Node.js 18 以上
-2. 一組 [Gemini API key](https://aistudio.google.com/apikey)（問答與語音共用同一把）
-3. 一組 [Simli](https://www.simli.com) API key（免費方案每月 50 分鐘）
-4. 一張正臉照片，**JPEG 或 PNG**（webp/heic 請先轉檔）
+2. 一組 [Gemini API key](https://aistudio.google.com/apikey)（TTS 用）
+3. 一組 [D-ID API key](https://www.d-id.com)（需要付費帳號，新註冊通常會有試用額度）
+4. 一張正臉照片，**JPEG、PNG 或 WEBP**
 
 ## 安裝與設定
 
 ```bash
 npm install
-cp .env.example .env                          # 填入 GEMINI_API_KEY 與 SIMLI_API_KEY
-npm run setup:simli-face path/to/你的照片.jpg   # 建立 avatar（需要幾分鐘），face id 會自動寫進 .env
+cp .env.example .env   # 填入 GEMINI_API_KEY 與 DID_API_KEY
 npm run build
 npm start
 ```
 
-開啟 `http://localhost:3000`。
+開啟 `http://localhost:3000`，上傳照片、貼上文字、按「產生說話影片」。
+
+**注意**：D-ID 需要能連到你伺服器暫存的語音檔網址，本機用 `localhost` 跑的話 D-ID 連不進來，只有部署到有公開網址的環境（如 Render）才能真的產生影片；本機主要用來檢查介面和其他邏輯。
 
 ## 部署到 Render
 
 repo 附有 `render.yaml`：在 [Render](https://render.com) 點 **New +** → **Blueprint** → 選這個 repo → **Apply**。
 
-環境變數 `GEMINI_API_KEY`、`SIMLI_API_KEY`、`SIMLI_FACE_ID` 要在 Render 的 Environment 頁手動加入（`setup:simli-face` 是一次性的本機操作，把產生的 face id 貼過去即可）。
+環境變數 `GEMINI_API_KEY`、`DID_API_KEY` 要在 Render 的 Environment 頁手動加入。
 
 **注意**：免費方案閒置約 15 分鐘會休眠，下次有人造訪要等十幾秒到一分鐘的冷啟動。
 
@@ -56,14 +47,13 @@ repo 附有 `render.yaml`：在 [Render](https://render.com) 點 **New +** → *
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `GEMINI_MODEL` | `gemini-3.6-flash` | 回答問題用的模型 |
 | `GEMINI_TTS_MODEL` | `gemini-2.5-flash-preview-tts` | 語音合成模型 |
 | `GEMINI_TTS_VOICE` | `Puck` | 語音角色，可換成 Gemini 其他內建聲音 |
 
 ## 已知限制
 
-- 綁定 Simli、Gemini 兩家供應商；超出免費額度後按用量計費
-- 需要清晰的正臉照片才能建立 avatar
-- 語音合成一句話約需 7–11 秒（Gemini TTS 不支援逐段串流，實測會整段一次回傳）
-- 語速控制是靠自然語言指示（「請用較慢的語速說」）達成，不是精確倍率
-- 手機連線失敗的問題尚未完全解決，根因未確認（詳見 `DEVELOPMENT.md` 第 8 節）
+- 綁定 Gemini、D-ID 兩家供應商；D-ID 是付費服務，按生成的影片秒數（額度）計費
+- 需要清晰的正臉照片
+- 文件內容上限 1500 字，超過會被截斷
+- 整個流程（語音合成 + D-ID 生成）約需 1-2 分鐘，視文字長度而定
+- 暫存的語音檔網址只在生成期間存在，生成完成或 15 分鐘後會被清除
