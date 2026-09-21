@@ -205,37 +205,6 @@ body {
   gap: var(--space-3);
 }
 
-/* — photo picker — */
-.photo-picker {
-  width: 100%;
-  height: 220px;
-  background: var(--color-neutral-900);
-  cursor: pointer;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.photo-preview {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.photo-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
-  color: #cfd5d9;
-  font-size: 13px;
-  text-align: center;
-}
-.photo-hint {
-  font-size: 11px;
-  color: color-mix(in srgb, #cfd5d9 65%, transparent);
-}
-
 .textarea-doc {
   min-height: 160px;
   resize: vertical;
@@ -253,6 +222,12 @@ body {
   font-size: 12px;
   color: var(--color-neutral-600);
   min-height: 1.1em;
+}
+.hint code {
+  font-family: monospace;
+  background: var(--color-surface);
+  padding: 1px 4px;
+  border: 1px solid var(--color-divider);
 }
 
 /* — progress — */

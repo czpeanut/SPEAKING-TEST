@@ -1,11 +1,12 @@
 {
   "name": "speaking-photo",
-  "version": "3.0.0",
-  "description": "Upload a photo and a document, get back a downloadable video of the photo speaking it — Gemini TTS + D-ID talking video.",
+  "version": "4.0.0",
+  "description": "Input a document, get back a downloadable video of a pre-set photo speaking it — Gemini TTS + Simli batch talking video.",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
+    "setup:simli-face": "node scripts/setup-simli-face.js",
     "build": "node scripts/build-client.js",
     "start": "node server.js",
     "dev": "node --watch server.js"

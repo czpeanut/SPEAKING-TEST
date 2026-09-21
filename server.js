@@ -1,7 +1,5 @@
 require("dotenv").config();
 const path = require("path");
-const os = require("os");
-const fs = require("fs");
 const crypto = require("crypto");
 const express = require("express");
 
@@ -9,30 +7,18 @@ const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Puck";
-const DID_API_KEY = process.env.DID_API_KEY;
+const SIMLI_API_KEY = process.env.SIMLI_API_KEY;
+const SIMLI_FACE_ID = process.env.SIMLI_FACE_ID;
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const DID_BASE = "https://api.d-id.com";
+const SIMLI_BASE = "https://api.simli.ai";
 
 const TEXT_MAX_LENGTH = 1500;
-const POLL_INTERVAL_MS = 3000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const JOB_TTL_MS = 15 * 60 * 1000;
-
-// D-ID's /talks endpoint needs real fetchable URLs, not data: URIs, for both
-// the source photo ("must be a valid image URL (ending with jpg|jpeg|png)")
-// and the driving audio ("must be a valid https URL to an audio
-// (flac,mp3,mp4,wav,m4a)") — confirmed by hitting the live API directly, even
-// though the general D-ID docs describe data-URL support for source_url. The
-// browser sends the photo as a data URL and we synthesize the WAV ourselves,
-// so both get written here and served statically just long enough for D-ID
-// to fetch them.
-const TMP_DIR = path.join(os.tmpdir(), "speaking-video-tmp");
-fs.mkdirSync(TMP_DIR, { recursive: true });
+const MP4_READY_BUFFER_MS = 2000;
 
 const app = express();
-app.set("trust proxy", true); // behind Render's proxy, needed so req.protocol reports https
-app.use(express.json({ limit: "20mb" })); // photo is sent as a base64 data URL
+app.use(express.json({ limit: "50kb" })); // just { text } now — no photo in the request
 
 // No content hashing on the built bundle, so make sure browsers always
 // revalidate instead of silently running a stale app.bundle.js after a
@@ -43,7 +29,6 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(path.join(__dirname, "public"), { etag: true, lastModified: true }));
-app.use("/tmp-media", express.static(TMP_DIR));
 
 // ---------- In-memory job store ----------
 const jobs = new Map();
@@ -55,11 +40,8 @@ function setJob(id, patch) {
   return job;
 }
 
-function scheduleCleanup(id, filePaths) {
-  setTimeout(() => {
-    jobs.delete(id);
-    filePaths.forEach((p) => fs.unlink(p, () => {}));
-  }, JOB_TTL_MS).unref();
+function scheduleCleanup(id) {
+  setTimeout(() => jobs.delete(id), JOB_TTL_MS).unref();
 }
 
 // ---------- Text sanitizing ----------
@@ -84,39 +66,18 @@ function sanitizeForSpeech(text) {
     .trim();
 }
 
-function wavHeader(dataLength, sampleRate, channels = 1, bitsPerSample = 16) {
-  const header = Buffer.alloc(44);
-  const blockAlign = (channels * bitsPerSample) / 8;
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataLength, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(channels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * blockAlign, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitsPerSample, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(dataLength, 40);
-  return header;
-}
-
 // Gemini's TTS model will sometimes treat short/conversational input (e.g. a
 // plain greeting) as something to respond to rather than a transcript to
 // read verbatim, and returns a 400 ("Model tried to generate text, but it
-// should only be used for TTS"). A plain instructive prefix fixes it — this
-// is the same technique withPaceDirection() used previously for rate
-// control, confirmed in production not to get read aloud itself.
+// should only be used for TTS"). A plain instructive prefix fixes it.
 function withNarrationInstruction(text) {
   return `請逐字朗讀以下文字，不要回答、不要評論、不要新增任何內容：${text}`;
 }
 
 // ---------- Gemini TTS ----------
-// Gemini returns headerless L16 PCM; wrap it in a WAV header — D-ID's
-// audio_url validator requires the URL to end in flac/mp3/mp4/wav/m4a, and
-// a real container so it can actually decode the audio.
+// Returns raw base64 PCM16 + its sample rate — Simli's /static/audio takes
+// PCM directly (audioFormat: "pcm16"), so unlike the earlier D-ID version
+// there's no WAV container to build here.
 async function synthesizeSpeech(text) {
   const ttsRes = await fetch(`${GEMINI_BASE}/${GEMINI_TTS_MODEL}:generateContent`, {
     method: "POST",
@@ -140,94 +101,62 @@ async function synthesizeSpeech(text) {
     throw new Error("語音合成沒有回傳音訊");
   }
 
-  const pcm = Buffer.from(inline.data, "base64");
   const sampleRate = Number(/rate=(\d+)/.exec(inline.mimeType || "")?.[1]) || 24000;
-  return Buffer.concat([wavHeader(pcm.length, sampleRate), pcm]);
+  return { audioBase64: inline.data, sampleRate };
 }
 
-// ---------- D-ID talking video ----------
-// D-ID's dashboard issues API keys as a raw "<id>:<secret>" pair (note the
-// colon) — that's HTTP Basic auth's username:password before encoding, not
-// the finished header value, so it needs base64-encoding here. Some older
-// D-ID keys are handed out pre-encoded (no colon); pass those through as-is.
-function didAuthToken() {
-  return DID_API_KEY.includes(":") ? Buffer.from(DID_API_KEY).toString("base64") : DID_API_KEY;
-}
-
-function didHeaders() {
-  return { Authorization: `Basic ${didAuthToken()}`, "Content-Type": "application/json" };
-}
-
-// D-ID only does lip-sync here (script.type "audio") — the voice itself is
-// entirely Gemini TTS (synthesizeSpeech() above), so it stays the male
-// "Puck" voice this project settled on rather than switching to a D-ID/Azure
-// voice. Confirmed against the live API that "audio" mode validates fine
-// on this account once the audio_url has a supported extension (.wav).
-async function createTalk(sourceUrl, audioUrl) {
-  const res = await fetch(`${DID_BASE}/talks`, {
+// ---------- Simli static video ----------
+// Simli's batch endpoint for a pre-created face: feed it audio, get back an
+// mp4 (and hls) URL, ready within a couple of seconds — no polling job
+// status for minutes like D-ID. The face itself (SIMLI_FACE_ID) is created
+// once, out of band, via `npm run setup:simli-face <photo>`.
+async function generateSimliVideo(audioBase64, sampleRate) {
+  const res = await fetch(`${SIMLI_BASE}/static/audio`, {
     method: "POST",
-    headers: didHeaders(),
+    headers: { "x-simli-api-key": SIMLI_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
-      source_url: sourceUrl,
-      script: { type: "audio", audio_url: audioUrl },
-      config: { stitch: true, result_format: "mp4" },
+      faceId: SIMLI_FACE_ID,
+      audioBase64,
+      audioFormat: "pcm16",
+      audioSampleRate: sampleRate,
+      audioChannelCount: 1,
     }),
   });
   const data = await res.json();
-  if (!res.ok || !data.id) {
-    throw new Error(`D-ID 建立影片失敗：${data.description || data.kind || res.status}`);
+  if (!res.ok || !data.mp4_url) {
+    throw new Error(`Simli 影片生成失敗：${data.detail ? JSON.stringify(data.detail) : res.status}`);
   }
-  return data.id;
+  return { mp4Url: data.mp4_url, etaSeconds: data.mp4_availablility_eta_seconds || 0 };
 }
 
-async function pollTalk(talkId) {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const res = await fetch(`${DID_BASE}/talks/${talkId}`, { headers: didHeaders() });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(`D-ID 查詢狀態失敗：${data.description || data.kind || res.status}`);
-    }
-    if (data.status === "done") return data.result_url;
-    if (data.status === "error" || data.status === "rejected") {
-      throw new Error(`D-ID 影片生成失敗：${data.error?.description || data.status}`);
-    }
-  }
-  throw new Error("D-ID 影片生成逾時");
-}
-
-async function processVideoJob(jobId, photoPath, photoUrl, text, baseUrl) {
-  const audioPath = path.join(TMP_DIR, `${jobId}.wav`);
+async function processVideoJob(jobId, text) {
   try {
     setJob(jobId, { status: "synthesizing", message: "AI教師啟動中…" });
-    const wavBuffer = await synthesizeSpeech(text);
-    fs.writeFileSync(audioPath, wavBuffer);
+    const { audioBase64, sampleRate } = await synthesizeSpeech(text);
 
     setJob(jobId, { status: "rendering", message: "AI教師模擬中…" });
-    const audioUrl = `${baseUrl}/tmp-media/${jobId}.wav`;
-    const talkId = await createTalk(photoUrl, audioUrl);
-    const videoUrl = await pollTalk(talkId);
+    const { mp4Url, etaSeconds } = await generateSimliVideo(audioBase64, sampleRate);
+    // Simli's mp4 host doesn't support HEAD (405), so we can't poll for
+    // readiness — just wait out the ETA it hands back plus a small buffer.
+    await new Promise((r) => setTimeout(r, etaSeconds * 1000 + MP4_READY_BUFFER_MS));
 
-    setJob(jobId, { status: "done", message: "完成", videoUrl });
+    setJob(jobId, { status: "done", message: "完成", videoUrl: mp4Url });
   } catch (err) {
     console.error(`影片工作 ${jobId} 失敗:`, err);
     setJob(jobId, { status: "error", error: err.message || String(err) });
   } finally {
-    scheduleCleanup(jobId, [photoPath, audioPath]);
+    scheduleCleanup(jobId);
   }
 }
 
 app.post("/api/video/generate", (req, res) => {
-  if (!GEMINI_API_KEY || !DID_API_KEY) {
-    return res.status(500).json({ error: "尚未設定 GEMINI_API_KEY 或 DID_API_KEY，請在環境變數加入後重新啟動伺服器。" });
+  if (!GEMINI_API_KEY || !SIMLI_API_KEY || !SIMLI_FACE_ID) {
+    return res.status(500).json({
+      error: "尚未設定 GEMINI_API_KEY、SIMLI_API_KEY 或 SIMLI_FACE_ID，請先執行 npm run setup:simli-face 並設定環境變數。",
+    });
   }
 
-  const { photo, text } = req.body || {};
-  const photoMatch = typeof photo === "string" && /^data:image\/(jpeg|jpg|png);base64,(.+)$/.exec(photo);
-  if (!photoMatch) {
-    return res.status(400).json({ error: "請提供 JPEG 或 PNG 格式的照片（D-ID 不接受 WEBP）" });
-  }
+  const { text } = req.body || {};
   if (typeof text !== "string" || !text.trim()) {
     return res.status(400).json({ error: "請提供要講出來的文件內容" });
   }
@@ -239,15 +168,9 @@ app.post("/api/video/generate", (req, res) => {
     console.warn(`文件長度 ${text.trim().length} 超過上限 ${TEXT_MAX_LENGTH}，已截斷`);
   }
 
-  const ext = photoMatch[1] === "jpg" ? "jpeg" : photoMatch[1];
   const jobId = crypto.randomUUID();
-  const photoPath = path.join(TMP_DIR, `${jobId}.${ext}`);
-  fs.writeFileSync(photoPath, Buffer.from(photoMatch[2], "base64"));
-  const photoUrl = `${req.protocol}://${req.get("host")}/tmp-media/${jobId}.${ext}`;
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
-
   setJob(jobId, { status: "queued", message: "排隊中…" });
-  processVideoJob(jobId, photoPath, photoUrl, cleanText, baseUrl);
+  processVideoJob(jobId, cleanText);
 
   res.status(202).json({ jobId, truncated: text.trim().length > TEXT_MAX_LENGTH });
 });
@@ -265,7 +188,7 @@ app.listen(PORT, () => {
   if (!GEMINI_API_KEY) {
     console.warn("⚠️  尚未設定 GEMINI_API_KEY，語音合成將無法使用。");
   }
-  if (!DID_API_KEY) {
-    console.warn("⚠️  尚未設定 DID_API_KEY，影片生成將無法使用。");
+  if (!SIMLI_API_KEY || !SIMLI_FACE_ID) {
+    console.warn("⚠️  尚未設定 Simli，請設定 SIMLI_API_KEY 並執行 `npm run setup:simli-face <照片路徑>`。");
   }
 });

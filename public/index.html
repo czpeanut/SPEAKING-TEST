@@ -18,27 +18,15 @@
         <div class="brand-sub">PHOTO TO TALKING VIDEO</div>
       </div>
     </header>
+    <p class="hint">輸入文字，讓已設定好的頭像照片講出這段內容。要換照片：執行 <code>npm run setup:simli-face &lt;照片路徑&gt;</code>（幾分鐘的一次性設定）。</p>
 
     <main class="card blueprint">
       <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
 
       <form id="generateForm" class="card-body">
-        <div class="field">
-          <label class="section-label" for="photoInput">1. 上傳照片</label>
-          <div class="photo-picker blueprint" id="photoDrop">
-            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
-            <img id="photoPreview" class="photo-preview" hidden alt="預覽照片" />
-            <div class="photo-placeholder" id="photoPlaceholder">
-              <span>點擊選擇正臉照片</span>
-              <span class="photo-hint">JPEG / PNG</span>
-            </div>
-            <input type="file" id="photoInput" accept="image/jpeg,image/png" hidden />
-          </div>
-        </div>
-
         <div class="field field-grow">
           <div class="field-header">
-            <label class="section-label" for="textInput">2. 輸入文件內容</label>
+            <label class="section-label" for="textInput">輸入文件內容</label>
             <label class="btn btn-small" for="fileInput">上傳文字檔 (.txt)</label>
             <input type="file" id="fileInput" accept=".txt,text/plain" hidden />
           </div>
