@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: speaking-photo
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
