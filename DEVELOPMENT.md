@@ -23,13 +23,15 @@ POST /api/video/generate { photo: dataURL, text }
       ▼
 sanitizeForSpeech(text) 清掉 Markdown/LaTeX 符號
       ▼
+把上傳的照片存到暫存目錄，用 /tmp-media/<jobId>.<ext> 這個路徑公開提供
+      ▼
 synthesizeSpeech() ──────► Gemini TTS API (gemini-2.5-flash-preview-tts)
-      │                     男聲 "Puck"，回傳無檔頭 L16 PCM
-      │◄──────────────────  後端補上 WAV 檔頭
+      │                     男聲 "Puck"，文字前面加一段「請逐字朗讀」指示避免被當成對話
+      │◄──────────────────  回傳無檔頭 L16 PCM，後端補上 WAV 檔頭
       ▼
-把 WAV 存到暫存目錄，用 /tmp-audio/<jobId>.wav 這個路徑公開提供
+把 WAV 也存到同一個暫存目錄，用 /tmp-media/<jobId>.wav 這個路徑公開提供
       ▼
-POST https://api.d-id.com/talks { source_url: 照片dataURL, script: { type: "audio", audio_url } }
+POST https://api.d-id.com/talks { source_url: 照片網址, script: { type: "audio", audio_url: 語音網址 } }
       │
       ▼
 輪詢 GET /talks/{id} 直到 status === "done"，拿到 result_url
@@ -38,9 +40,9 @@ POST https://api.d-id.com/talks { source_url: 照片dataURL, script: { type: "au
 ```
 
 後端（`server.js`）只做這些事，金鑰全部留在伺服器端：
-1. `POST /api/video/generate`：驗證輸入、建立工作、回傳 `jobId`，背景跑完整流程（TTS → 暫存音檔 → D-ID 建立工作 → 輪詢）
+1. `POST /api/video/generate`：驗證輸入、把照片存成暫存檔、建立工作、回傳 `jobId`，背景跑完整流程（TTS → 暫存音檔 → D-ID 建立工作 → 輪詢）
 2. `GET /api/video/status/:id`：前端輪詢用，回傳工作目前狀態（`queued`/`synthesizing`/`rendering`/`done`/`error`）與完成後的 `videoUrl`
-3. `/tmp-audio/*`：暫存語音檔的靜態路由，只給 D-ID 抓取用，工作結束或 15 分鐘後會被清掉
+3. `/tmp-media/*`：暫存照片和語音檔的靜態路由，只給 D-ID 抓取用，工作結束或 15 分鐘後會被清掉
 
 工作狀態存在記憶體（`Map`），不是資料庫——重啟伺服器會遺失所有進行中的工作，這對單一使用者的小工具是可接受的取捨，但合併到多實例/多 worker 的專案時要注意（見第 8 節）。
 
@@ -71,7 +73,7 @@ POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}:
 Header: x-goog-api-key: <GEMINI_API_KEY>
 Body:
 {
-  "contents": [{ "parts": [{ "text": "<文件內容，已清洗過 Markdown/LaTeX>" }] }],
+  "contents": [{ "parts": [{ "text": "請逐字朗讀以下文字，不要回答、不要評論、不要新增任何內容：<文件內容，已清洗過 Markdown/LaTeX>" }] }],
   "generationConfig": {
     "responseModalities": ["AUDIO"],
     "speechConfig": { "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": "Puck" } } }
@@ -81,23 +83,31 @@ Body:
 
 回應是 base64 的**無檔頭 L16 PCM**（`mimeType` 字串裡帶 `rate=24000`），後端 `wavHeader()` 手動組 44-byte WAV 檔頭再存成檔案，因為 D-ID 需要一個完整的音檔容器格式，不能直接吃裸 PCM。
 
+**踩過的坑**：直接把短句（例如「你好，這是一個測試。」）當 `text` 送進去，Gemini 有機率回傳 `400 INVALID_ARGUMENT`：「Model tried to generate text, but it should only be used for TTS」——模型把輸入當成一句要回應的話（像對話開場白），而不是要逐字唸出來的稿子。舊架構下沒踩到這個坑，是因為送進去的文字都是 Gemini 自己生成的問答回答（本來就是陳述句），這次是使用者自由輸入的文件內容，短的、口語化的句子容易觸發這個誤判。修法：在文字前面加一段明確指示（`withNarrationInstruction()`），跟 `withPaceDirection()` 的語速前綴是同一種技巧——這段指示本身不會被唸出來，只會被模型當成「不要回應、只朗讀」的指示。
+
 Gemini TTS **不支援真正的逐段串流**：測過 `streamGenerateContent?alt=sse`，回應還是整段音訊一次送達（`chunks=1`），沒有邊生成邊送的效果——但批次影片生成本來就不需要串流，這個限制已經不是問題（舊架構下這是延遲的主因，見第 6.1、8 節）。
 
 ### 4.2 D-ID 批次影片生成（`createTalk()` / `pollTalk()`）
 
 ```
 POST https://api.d-id.com/talks
-Header: Authorization: Basic <DID_API_KEY>
+Header: Authorization: Basic <DID_API_KEY 的 base64>
 Body:
 {
-  "source_url": "data:image/jpeg;base64,...",   ← 照片，直接用 data URL，D-ID 支援
-  "script": { "type": "audio", "audio_url": "https://<你的網域>/tmp-audio/<jobId>.wav" },
+  "source_url": "https://<你的網域>/tmp-media/<jobId>.<jpeg|png>",
+  "script": { "type": "audio", "audio_url": "https://<你的網域>/tmp-media/<jobId>.wav" },
   "config": { "stitch": true, "result_format": "mp4" }
 }
 回應: { "id": "tlk_xxx", "status": "created", ... }
 ```
 
-**關鍵限制**：`audio_url` 必須是 D-ID 的伺服器能連到的網址，**不支援 data URL**（跟 `source_url` 不同），所以生成的語音檔一定要先暫存在某個公開可存取的地方（這個專案是自己的 Express 伺服器 + `/tmp-audio` 靜態路由）。這也是為什麼本機用 `localhost` 跑無法真的生成影片——D-ID 連不進 `localhost`（見第 8 節）。
+**關鍵限制（都是直接打 API 實測出來的，跟 D-ID 一般文件描述有出入）**：
+- `source_url` **不接受 data URL**，即使一般文件說支援——實測回傳 `400 ValidationError`：「must be a valid image URL (ending with jpg|jpeg|png)」，包含合法的 data URL 也一樣被拒絕。一定要是真正可以被 D-ID 伺服器抓到的網址。
+- `audio_url` 也**不接受 data URL**，且副檔名必須是 `flac`/`mp3`/`mp4`/`wav`/`m4a` 其中之一，用其他副檔名（例如 `.ogg`）即使內容是有效音檔也會被 schema 直接拒絕。
+- 兩者都**必須是 https**（不是單純「可連到」的問題）：本機測試時用 `http://localhost:...` 送出去，`audio_url` 的驗證訊息明確寫「must be a valid https URL」；`source_url` 雖然錯誤訊息沒有明講 https，但同樣被拒絕。這是為什麼本機用 `http://localhost` 跑無法真的生成影片（見第 8 節）——Render 部署後網址本身就是 https，這裡不用額外處理。
+- 因為以上限制，這個專案把「使用者上傳的照片」和「Gemini TTS 產生的語音」都先寫進暫存目錄，用 `/tmp-media` 這個 Express 靜態路由公開提供，讓 D-ID 能抓到，工作結束或 15 分鐘後清掉暫存檔。
+
+**曾經誤判過的地方**：第一次測試 `script.type: "audio"` 時用了一個 `.ogg` 的音檔網址，收到的錯誤訊息（union 型別的驗證錯誤，會同時列出多個候選 schema 各自失敗的原因）長得像「這個帳號只支援 `type: 'text'`」，一度誤以為是帳號/方案限制，因此在文件跟程式碼裡短暫改成用 D-ID 內建 TTS（`script.type: "text"` + `provider: { type: "microsoft", voice_id: "zh-CN-YunyangNeural" }`，這部分程式碼已經不在目前的 `server.js` 裡了）。換成正確副檔名（`.wav`）之後重測，`type: "audio"` 一樣能通過驗證，證實純粹是副檔名問題，不是帳號限制——目前這個專案維持用 `type: "audio"`，因為這樣語音仍然是 Gemini TTS 的男聲 `Puck`，D-ID 只負責嘴型同步，不用依賴 D-ID/Azure 的語音音色。如果之後合併專案時想省一個 API 呼叫（不用 Gemini TTS），`type: "text"` + `provider` 也是可行選項，只是聲音來源會變成 D-ID 的 TTS 供應商。
 
 輪詢：
 ```
@@ -193,10 +203,10 @@ Header: Authorization: Basic <DID_API_KEY>
 
 ## 8. 已知未解決的問題
 
-- **本機開發無法端到端測試影片生成**：D-ID 需要能連到 `audio_url` 這個網址抓音檔，`localhost` 對 D-ID 的伺服器來說不可達。本機可以測到「工作有沒有成功送出、輪詢邏輯對不對、前端狀態顯示對不對」，但實際「有沒有生成出一支真的影片」只能在有公開網址的部署環境（如 Render）驗證。如果要在本機完整測試，需要用 ngrok/cloudflared 這類工具開一個對外的隧道網址。
+- **這把 D-ID key 目前額度是 0，要先去後台加值/開通方案**：實測打 `GET /credits` 回傳 `{"credits":[],"remaining":0,"total":0}`——帳號本身有效（認證會過），但沒有任何額度，`/talks` 一律回 `402 InsufficientCreditsError`。這不是程式碼問題，使用者要自己去 d-id.com 後台加值或開通方案才會真的有額度可以生成影片。
+- **本機開發無法端到端測試出真的影片**：D-ID 對 `source_url`／`audio_url` 都要求真正的 **https** 網址（見第 4.2 節「關鍵限制」），本機 `http://localhost` 兩個條件都不滿足。本機能測到：認證格式對不對（已用真實 key 實測 `GET /credits` 回 200）、`/talks` 的 request body 格式對不對（已用真實 key 實測 `script.type: "text"` 和 `"audio"` 兩種都能通過 schema 驗證）、`/api/video/generate` 的輸入驗證邏輯、Gemini TTS 呼叫本身（已實測成功，且修掉了短句被誤判成對話的 bug，見第 4.1 節）。測不到的只剩「D-ID 實際抓到暫存檔、真的合成出一支影片」這一步，這需要部署到有公開 https 網址的環境（如 Render）或用 ngrok/cloudflared 開一個對外隧道才能驗證。**額度加值後，第一次部署應該立刻手動跑一次完整流程確認能拿到 `result_url` 且影片能播放。**
 - **D-ID 影片工作狀態存在記憶體、非持久化**：`server.js` 的 `jobs` 是一個 `Map`，伺服器重啟或（未來）多實例部署時，進行中的工作會直接遺失、使用者輪詢會拿到 404。目前是單一小工具、單一 Render instance，這個取捨還算合理；合併到多 worker/多實例的專案時，這裡需要換成 Redis 或資料庫之類的共享狀態。
-- **`result_url` 有效期未知/未長期驗證**：D-ID 回傳的 `result_url` 是他們儲存空間的直連網址，官方文件沒有明確保證多久後失效，這個專案的假設是「使用者完成後應該立即下載，不要指望這個網址長期可用」，但沒有實測過確切的失效時間。
-- **這次改版沒有做真實的 D-ID `/talks` 端到端測試**：因為需要一把付費的 `DID_API_KEY` 和一個能被 D-ID 存取的公開網址，這兩者在開發當下都不具備。已驗證的是：伺服器啟動、靜態頁面、`/api/video/generate` 的輸入驗證邏輯（見第 7 節下方測試記錄）。**實際部署後第一次使用時，務必確認整條 pipeline（TTS → 暫存音檔 → D-ID 建立工作 → 輪詢 → 影片能播放）真的跑得通**，如果 D-ID 的實際 request/response 格式跟文件描述有出入，`createTalk()`／`pollTalk()`（`server.js`）是要修的地方。
+- **`result_url` 有效期未知/未長期驗證**：D-ID 回傳的 `result_url` 是他們儲存空間的直連網址，官方文件沒有明確保證多久後失效，這個專案的假設是「使用者完成後應該立即下載，不要指望這個網址長期可用」，但沒有實測過確切的失效時間（帳號額度是 0，還沒能真的跑出一個 `result_url` 來驗證）。
 - **文字轉語音仍需 7-17 秒、D-ID 生成再疊加約 30 秒到 1-2 分鐘**：整體使用者等待時間可能到 2-3 分鐘，沒有做「先給預覽再補完整影片」之類的體驗優化。
 
 ## 9. 費用參考（2026-09 查證，會浮動）
@@ -209,8 +219,9 @@ Header: Authorization: Basic <DID_API_KEY>
 ## 10. 合併到其他專案時的檢查清單
 
 - [ ] 兩把環境變數（`GEMINI_API_KEY`、`DID_API_KEY`）要手動搬過去，不會隨 git 走
+- [ ] **確認 `DID_API_KEY` 這個帳號有實際額度**（`GET https://api.d-id.com/credits` 檢查），光是有 key 不代表能用，見第 8 節
 - [ ] 部署環境要能跑 `npm run build`（esbuild 打包 `public/src/app.js` → `public/app.bundle.js`），純靜態檔案不會自動反映 `src/` 的修改
-- [ ] 部署環境要有**公開可連到的網址**，D-ID 才能抓到暫存的語音檔（`/tmp-audio/*`）；純內網／本機環境測不了完整流程（見第 8 節）
+- [ ] 部署環境要有**公開可連到的 https 網址**，D-ID 才能抓到暫存的照片和語音檔（`/tmp-media/*`）；純內網／本機環境測不了完整流程（見第 8 節）
 - [ ] 如果目標專案也用 Express，注意 `server.js` 目前把 `Cache-Control: no-cache` 設成全域 middleware，合併時如果有其他靜態資源想被快取，這個全域設定需要調整成只針對 `public/` 或特定副檔名
 - [ ] `jobs`（記憶體內的工作狀態 Map）在多實例部署下會不一致，見第 8 節
 - [ ] `SIMLI_API_KEY`、`SIMLI_FACE_ID`、`GEMINI_MODEL`、`simli-client` 套件、`scripts/setup-simli-face.js`、`/api/ask`、`/api/simli/*` 都是**舊架構（即時問答虛擬人）的殘留**，已在這次改版移除，如果合併時看到舊分支/舊 commit 裡有這些，不要重新引入

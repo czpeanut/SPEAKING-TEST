@@ -19,12 +19,16 @@ const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const JOB_TTL_MS = 15 * 60 * 1000;
 
-// D-ID needs to fetch the generated audio from a public URL (unlike the
-// source photo, which it accepts as a data URL directly). We write each
-// job's synthesized speech here and serve it statically, then delete it
-// once the job finishes or expires.
-const TMP_AUDIO_DIR = path.join(os.tmpdir(), "speaking-video-audio");
-fs.mkdirSync(TMP_AUDIO_DIR, { recursive: true });
+// D-ID's /talks endpoint needs real fetchable URLs, not data: URIs, for both
+// the source photo ("must be a valid image URL (ending with jpg|jpeg|png)")
+// and the driving audio ("must be a valid https URL to an audio
+// (flac,mp3,mp4,wav,m4a)") — confirmed by hitting the live API directly, even
+// though the general D-ID docs describe data-URL support for source_url. The
+// browser sends the photo as a data URL and we synthesize the WAV ourselves,
+// so both get written here and served statically just long enough for D-ID
+// to fetch them.
+const TMP_DIR = path.join(os.tmpdir(), "speaking-video-tmp");
+fs.mkdirSync(TMP_DIR, { recursive: true });
 
 const app = express();
 app.set("trust proxy", true); // behind Render's proxy, needed so req.protocol reports https
@@ -39,7 +43,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(path.join(__dirname, "public"), { etag: true, lastModified: true }));
-app.use("/tmp-audio", express.static(TMP_AUDIO_DIR));
+app.use("/tmp-media", express.static(TMP_DIR));
 
 // ---------- In-memory job store ----------
 const jobs = new Map();
@@ -51,10 +55,10 @@ function setJob(id, patch) {
   return job;
 }
 
-function scheduleCleanup(id, audioPath) {
+function scheduleCleanup(id, filePaths) {
   setTimeout(() => {
     jobs.delete(id);
-    if (audioPath) fs.unlink(audioPath, () => {});
+    filePaths.forEach((p) => fs.unlink(p, () => {}));
   }, JOB_TTL_MS).unref();
 }
 
@@ -99,15 +103,26 @@ function wavHeader(dataLength, sampleRate, channels = 1, bitsPerSample = 16) {
   return header;
 }
 
+// Gemini's TTS model will sometimes treat short/conversational input (e.g. a
+// plain greeting) as something to respond to rather than a transcript to
+// read verbatim, and returns a 400 ("Model tried to generate text, but it
+// should only be used for TTS"). A plain instructive prefix fixes it — this
+// is the same technique withPaceDirection() used previously for rate
+// control, confirmed in production not to get read aloud itself.
+function withNarrationInstruction(text) {
+  return `請逐字朗讀以下文字，不要回答、不要評論、不要新增任何內容：${text}`;
+}
+
 // ---------- Gemini TTS ----------
-// Gemini returns headerless L16 PCM; wrap it in a WAV header so D-ID (and
-// any browser) can just play/decode the file directly.
+// Gemini returns headerless L16 PCM; wrap it in a WAV header — D-ID's
+// audio_url validator requires the URL to end in flac/mp3/mp4/wav/m4a, and
+// a real container so it can actually decode the audio.
 async function synthesizeSpeech(text) {
   const ttsRes = await fetch(`${GEMINI_BASE}/${GEMINI_TTS_MODEL}:generateContent`, {
     method: "POST",
     headers: { "x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: withNarrationInstruction(text) }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_TTS_VOICE } } },
@@ -131,10 +146,23 @@ async function synthesizeSpeech(text) {
 }
 
 // ---------- D-ID talking video ----------
-function didHeaders() {
-  return { Authorization: `Basic ${DID_API_KEY}`, "Content-Type": "application/json" };
+// D-ID's dashboard issues API keys as a raw "<id>:<secret>" pair (note the
+// colon) — that's HTTP Basic auth's username:password before encoding, not
+// the finished header value, so it needs base64-encoding here. Some older
+// D-ID keys are handed out pre-encoded (no colon); pass those through as-is.
+function didAuthToken() {
+  return DID_API_KEY.includes(":") ? Buffer.from(DID_API_KEY).toString("base64") : DID_API_KEY;
 }
 
+function didHeaders() {
+  return { Authorization: `Basic ${didAuthToken()}`, "Content-Type": "application/json" };
+}
+
+// D-ID only does lip-sync here (script.type "audio") — the voice itself is
+// entirely Gemini TTS (synthesizeSpeech() above), so it stays the male
+// "Puck" voice this project settled on rather than switching to a D-ID/Azure
+// voice. Confirmed against the live API that "audio" mode validates fine
+// on this account once the audio_url has a supported extension (.wav).
 async function createTalk(sourceUrl, audioUrl) {
   const res = await fetch(`${DID_BASE}/talks`, {
     method: "POST",
@@ -147,7 +175,7 @@ async function createTalk(sourceUrl, audioUrl) {
   });
   const data = await res.json();
   if (!res.ok || !data.id) {
-    throw new Error(`D-ID 建立影片失敗：${(data.description || data.kind || res.status)}`);
+    throw new Error(`D-ID 建立影片失敗：${data.description || data.kind || res.status}`);
   }
   return data.id;
 }
@@ -159,7 +187,7 @@ async function pollTalk(talkId) {
     const res = await fetch(`${DID_BASE}/talks/${talkId}`, { headers: didHeaders() });
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(`D-ID 查詢狀態失敗：${(data.description || data.kind || res.status)}`);
+      throw new Error(`D-ID 查詢狀態失敗：${data.description || data.kind || res.status}`);
     }
     if (data.status === "done") return data.result_url;
     if (data.status === "error" || data.status === "rejected") {
@@ -169,16 +197,16 @@ async function pollTalk(talkId) {
   throw new Error("D-ID 影片生成逾時");
 }
 
-async function processVideoJob(jobId, photoDataUrl, text, baseUrl) {
-  const audioPath = path.join(TMP_AUDIO_DIR, `${jobId}.wav`);
+async function processVideoJob(jobId, photoPath, photoUrl, text, baseUrl) {
+  const audioPath = path.join(TMP_DIR, `${jobId}.wav`);
   try {
     setJob(jobId, { status: "synthesizing", message: "AI教師啟動中…" });
     const wavBuffer = await synthesizeSpeech(text);
     fs.writeFileSync(audioPath, wavBuffer);
 
     setJob(jobId, { status: "rendering", message: "AI教師模擬中…" });
-    const audioUrl = `${baseUrl}/tmp-audio/${jobId}.wav`;
-    const talkId = await createTalk(photoDataUrl, audioUrl);
+    const audioUrl = `${baseUrl}/tmp-media/${jobId}.wav`;
+    const talkId = await createTalk(photoUrl, audioUrl);
     const videoUrl = await pollTalk(talkId);
 
     setJob(jobId, { status: "done", message: "完成", videoUrl });
@@ -186,8 +214,7 @@ async function processVideoJob(jobId, photoDataUrl, text, baseUrl) {
     console.error(`影片工作 ${jobId} 失敗:`, err);
     setJob(jobId, { status: "error", error: err.message || String(err) });
   } finally {
-    fs.unlink(audioPath, () => {});
-    scheduleCleanup(jobId, null);
+    scheduleCleanup(jobId, [photoPath, audioPath]);
   }
 }
 
@@ -197,8 +224,9 @@ app.post("/api/video/generate", (req, res) => {
   }
 
   const { photo, text } = req.body || {};
-  if (typeof photo !== "string" || !/^data:image\/(jpeg|jpg|png|webp);base64,/.test(photo)) {
-    return res.status(400).json({ error: "請提供 JPEG、PNG 或 WEBP 格式的照片" });
+  const photoMatch = typeof photo === "string" && /^data:image\/(jpeg|jpg|png);base64,(.+)$/.exec(photo);
+  if (!photoMatch) {
+    return res.status(400).json({ error: "請提供 JPEG 或 PNG 格式的照片（D-ID 不接受 WEBP）" });
   }
   if (typeof text !== "string" || !text.trim()) {
     return res.status(400).json({ error: "請提供要講出來的文件內容" });
@@ -211,10 +239,15 @@ app.post("/api/video/generate", (req, res) => {
     console.warn(`文件長度 ${text.trim().length} 超過上限 ${TEXT_MAX_LENGTH}，已截斷`);
   }
 
+  const ext = photoMatch[1] === "jpg" ? "jpeg" : photoMatch[1];
   const jobId = crypto.randomUUID();
+  const photoPath = path.join(TMP_DIR, `${jobId}.${ext}`);
+  fs.writeFileSync(photoPath, Buffer.from(photoMatch[2], "base64"));
+  const photoUrl = `${req.protocol}://${req.get("host")}/tmp-media/${jobId}.${ext}`;
   const baseUrl = `${req.protocol}://${req.get("host")}`;
+
   setJob(jobId, { status: "queued", message: "排隊中…" });
-  processVideoJob(jobId, photo, cleanText, baseUrl);
+  processVideoJob(jobId, photoPath, photoUrl, cleanText, baseUrl);
 
   res.status(202).json({ jobId, truncated: text.trim().length > TEXT_MAX_LENGTH });
 });
