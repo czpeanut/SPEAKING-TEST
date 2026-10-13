@@ -1,0 +1,21 @@
+{
+  "name": "speaking-photo",
+  "version": "4.0.0",
+  "description": "Input a document, get back a downloadable video of a pre-set photo speaking it — Gemini TTS + Simli batch talking video.",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "setup:simli-face": "node scripts/setup-simli-face.js",
+    "build": "node scripts/build-client.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

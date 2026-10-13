@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>照片說話影片產生器</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="brand">
+      <div class="brand-mark blueprint">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>AI
+      </div>
+      <div>
+        <div class="brand-title">照片說話影片產生器</div>
+        <div class="brand-sub">PHOTO TO TALKING VIDEO</div>
+      </div>
+    </header>
+    <p class="hint">輸入文字，讓已設定好的頭像照片講出這段內容。要換照片：執行 <code>npm run setup:simli-face &lt;照片路徑&gt;</code>（幾分鐘的一次性設定）。</p>
+
+    <main class="card blueprint">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+
+      <form id="generateForm" class="card-body">
+        <div class="field field-grow">
+          <div class="field-header">
+            <label class="section-label" for="textInput">輸入文件內容</label>
+            <label class="btn btn-small" for="fileInput">上傳文字檔 (.txt)</label>
+            <input type="file" id="fileInput" accept=".txt,text/plain" hidden />
+          </div>
+          <textarea
+            id="textInput"
+            class="input textarea-doc"
+            maxlength="1500"
+            placeholder="貼上或輸入要讓照片講出來的文字內容…"
+          ></textarea>
+          <div class="char-count" id="charCount">0 / 1500</div>
+        </div>
+
+        <button type="submit" id="generateBtn" class="btn btn-primary btn-block blueprint">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          產生說話影片
+        </button>
+        <p class="hint" id="hint"></p>
+      </form>
+
+      <div class="progress-panel" id="progressPanel" hidden>
+        <div class="spinner"></div>
+        <p id="progressStatus">AI教師啟動中…</p>
+      </div>
+
+      <div class="result-panel" id="resultPanel" hidden>
+        <div class="result-frame blueprint">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <video id="resultVideo" class="result-video" controls playsinline></video>
+        </div>
+        <div class="result-actions">
+          <a id="downloadLink" class="btn btn-primary blueprint" download="talking-video.mp4" target="_blank" rel="noopener">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            下載影片
+          </a>
+          <button type="button" id="resetBtn" class="btn">再做一部</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="app.bundle.js"></script>
+</body>
+</html>
